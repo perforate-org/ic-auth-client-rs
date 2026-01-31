@@ -136,6 +136,12 @@ impl PemStorage {
     }
 
     fn write_json_value(&mut self, key: &str, value: StoredKey) -> Result<(), StorageError> {
+        #[cfg(feature = "wasm-js")]
+        if matches!(value, StoredKey::CryptoKeyPair(_)) {
+            return Err(StorageError::File(
+                "CryptoKeyPair cannot be stored in PEM storage".to_string(),
+            ));
+        }
         self.ensure_directory()?;
         let path = self.file_path(key);
         let serialized = serde_json::to_string(&PemStoredValue::from(&value))
@@ -155,11 +161,17 @@ impl PemStorage {
 
     fn stored_key_to_raw(value: StoredKey) -> Result<[u8; 32], StorageError> {
         match value {
-            StoredKey::Raw(bytes) => Ok(bytes),
+            StoredKey::Raw(bytes) => bytes.try_into().map_err(|_| {
+                StorageError::Decode(DecodeError::Ed25519("Invalid slice length".into()))
+            }),
             StoredKey::String(string) => {
                 let stored = StoredKey::String(string);
-                stored.decode().map_err(StorageError::from)
+                stored.decode_ed25519().map_err(StorageError::from)
             }
+            #[cfg(feature = "wasm-js")]
+            StoredKey::CryptoKeyPair(_) => Err(StorageError::File(
+                "CryptoKeyPair cannot be stored in PEM storage".to_string(),
+            )),
         }
     }
 }
@@ -190,6 +202,8 @@ impl From<&StoredKey> for PemStoredValue {
                 PemStoredValue::Raw(BASE64_STANDARD_NO_PAD.encode(bytes.as_slice()))
             }
             StoredKey::String(string) => PemStoredValue::String(string.clone()),
+            #[cfg(feature = "wasm-js")]
+            StoredKey::CryptoKeyPair(_) => PemStoredValue::String("".to_string()),
         }
     }
 }
@@ -203,7 +217,7 @@ impl TryFrom<PemStoredValue> for StoredKey {
                 let decoded = BASE64_STANDARD_NO_PAD
                     .decode(data)
                     .map_err(DecodeError::Base64)?;
-                StoredKey::try_from(decoded)
+                Ok(StoredKey::Raw(decoded))
             }
             PemStoredValue::String(string) => Ok(StoredKey::String(string)),
         }
@@ -214,13 +228,15 @@ impl AuthClientStorage for PemStorage {
     fn get(&mut self, key: &str) -> Result<Option<StoredKey>, StorageError> {
         if key == KEY_STORAGE_KEY {
             if let Some(raw_key) = self.read_private_key_pem()? {
-                return Ok(Some(StoredKey::Raw(raw_key)));
+                return Ok(Some(StoredKey::Raw(raw_key.to_vec())));
             }
             if let Some(legacy) = self.read_json_value(key)? {
-                let raw = legacy.decode().map_err(StorageError::from)?;
-                self.write_private_key_pem(&raw)?;
-                let _ = self.remove_json_file(key);
-                return Ok(Some(StoredKey::Raw(raw)));
+                if let Ok(raw) = legacy.decode_ed25519().map_err(StorageError::from) {
+                    self.write_private_key_pem(&raw)?;
+                    let _ = self.remove_json_file(key);
+                    return Ok(Some(StoredKey::Raw(raw.to_vec())));
+                }
+                return Ok(Some(legacy));
             }
             return Ok(None);
         }
@@ -229,9 +245,39 @@ impl AuthClientStorage for PemStorage {
 
     fn set(&mut self, key: &str, value: StoredKey) -> Result<(), StorageError> {
         if key == KEY_STORAGE_KEY {
-            let raw = Self::stored_key_to_raw(value)?;
-            self.write_private_key_pem(&raw)?;
-            let _ = self.remove_json_file(key);
+            match value {
+                StoredKey::Raw(bytes) => {
+                    if bytes.len() == 32 {
+                        let raw: [u8; 32] = bytes.try_into().map_err(|_| {
+                            StorageError::Decode(DecodeError::Ed25519(
+                                "Invalid slice length".into(),
+                            ))
+                        })?;
+                        self.write_private_key_pem(&raw)?;
+                        let _ = self.remove_json_file(key);
+                    } else {
+                        self.ensure_directory()?;
+                        self.write_json_value(key, StoredKey::Raw(bytes))?;
+                        let _ = fs::remove_file(self.key_file_path());
+                    }
+                }
+                StoredKey::String(string) => {
+                    let stored = StoredKey::String(string);
+                    if let Ok(raw) = Self::stored_key_to_raw(stored.clone()) {
+                        self.write_private_key_pem(&raw)?;
+                        let _ = self.remove_json_file(key);
+                    } else {
+                        self.write_json_value(key, stored)?;
+                        let _ = fs::remove_file(self.key_file_path());
+                    }
+                }
+                #[cfg(feature = "wasm-js")]
+                StoredKey::CryptoKeyPair(_) => {
+                    return Err(StorageError::File(
+                        "CryptoKeyPair cannot be stored in PEM storage".to_string(),
+                    ));
+                }
+            }
             return Ok(());
         }
         self.write_json_value(key, value)
@@ -282,7 +328,7 @@ mod tests {
             .set("identity", StoredKey::from(key))
             .expect("store key");
         let retrieved = storage.get("identity").expect("read key").unwrap();
-        assert_eq!(retrieved.decode().unwrap(), key);
+        assert_eq!(retrieved.decode_ed25519().unwrap(), key);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -313,7 +359,7 @@ mod tests {
             .get(KEY_STORAGE_KEY)
             .expect("read key")
             .expect("missing key");
-        assert_eq!(retrieved.decode().unwrap(), key);
+        assert_eq!(retrieved.decode_ed25519().unwrap(), key);
         let pem_key = storage
             .read_private_key_pem()
             .expect("read pem")
@@ -337,7 +383,7 @@ mod tests {
             .get(KEY_STORAGE_KEY)
             .expect("read key")
             .expect("missing key");
-        assert_eq!(retrieved.decode().unwrap(), key);
+        assert_eq!(retrieved.decode_ed25519().unwrap(), key);
         assert!(storage.key_file_path().exists());
         assert!(!legacy_path.exists());
         let _ = fs::remove_dir_all(dir);

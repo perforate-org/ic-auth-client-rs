@@ -14,7 +14,7 @@ by the Internet Computer.
 1. Start a local replica and deploy the example canisters from `examples/gpui`:
    ```bash
    dfx start --background
-   make deploy
+   dfx deploy
    ```
 2. Build the Internet Identity integration assets (only needed when they change):
    ```bash

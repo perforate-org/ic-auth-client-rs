@@ -8,6 +8,8 @@ use thiserror::Error;
 
 #[cfg(feature = "wasm-js")]
 pub mod async_storage;
+#[cfg(feature = "wasm-js")]
+pub mod js_compat;
 #[cfg(feature = "native")]
 pub mod sync_storage;
 
@@ -15,39 +17,69 @@ pub mod sync_storage;
 pub const KEY_STORAGE_KEY: &str = "identity";
 /// A key for storing the delegation chain.
 pub const KEY_STORAGE_DELEGATION: &str = "delegation";
+#[cfg(feature = "wasm-js")]
 pub(crate) const KEY_VECTOR: &str = "iv";
+/// A key for storing the base key type.
+pub const KEY_STORAGE_KEY_TYPE: &str = "key-type";
+
+/// Storage keys used by the AuthClient.
+pub mod storage_keys {
+    use super::{KEY_STORAGE_DELEGATION, KEY_STORAGE_KEY, KEY_STORAGE_KEY_TYPE};
+
+    /// Stored identity key material.
+    pub const IDENTITY_KEY: &str = KEY_STORAGE_KEY;
+    /// Stored delegation chain.
+    pub const DELEGATION_KEY: &str = KEY_STORAGE_DELEGATION;
+    /// Stored base key type.
+    pub const KEY_TYPE_KEY: &str = KEY_STORAGE_KEY_TYPE;
+}
 
 /// Enum for storing different types of keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredKey {
-    /// A base64-encoded string representation of a 32-byte key.
+    /// A string representation (typically JSON or base64).
     String(String),
-    /// Raw 32-byte key data.
-    Raw([u8; 32]),
+    /// Raw key data.
+    Raw(Vec<u8>),
+    /// A WebCrypto key pair (IndexedDB only).
+    #[cfg(feature = "wasm-js")]
+    CryptoKeyPair(web_sys::CryptoKeyPair),
 }
 
 impl StoredKey {
-    /// Decodes the stored key into a 32-byte array.
+    /// Decodes the stored key into raw bytes.
     ///
     /// For `String` variants, decodes from base64. For `Raw` variants, returns the bytes directly.
     ///
     /// # Errors
     ///
     /// Returns `DecodeError::Base64` if base64 decoding fails.
-    /// Returns `DecodeError::Ed25519` if the decoded data is not exactly 32 bytes.
-    pub fn decode(&self) -> Result<[u8; 32], DecodeError> {
+    pub fn decode(&self) -> Result<Vec<u8>, DecodeError> {
         match self {
             StoredKey::String(s) => {
                 let bytes = BASE64_STANDARD_NO_PAD
                     .decode(s)
                     .map_err(DecodeError::Base64)?;
-                let bytes: [u8; 32] = bytes
-                    .try_into()
-                    .map_err(|_| DecodeError::Ed25519("Invalid slice length".to_string()))?;
                 Ok(bytes)
             }
-            StoredKey::Raw(bytes) => Ok(*bytes),
+            StoredKey::Raw(bytes) => Ok(bytes.clone()),
+            #[cfg(feature = "wasm-js")]
+            StoredKey::CryptoKeyPair(_) => Err(DecodeError::Key(
+                "CryptoKeyPair cannot be decoded to raw bytes".to_string(),
+            )),
         }
+    }
+
+    /// Decodes the stored key into a 32-byte array for Ed25519 keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DecodeError::Ed25519` if the decoded data is not exactly 32 bytes.
+    pub fn decode_ed25519(&self) -> Result<[u8; 32], DecodeError> {
+        let bytes = self.decode()?;
+        bytes
+            .try_into()
+            .map_err(|_| DecodeError::Ed25519("Invalid slice length".to_string()))
     }
 
     /// Encodes the stored key as a string.
@@ -57,13 +89,15 @@ impl StoredKey {
         match self {
             StoredKey::String(s) => s.clone(),
             StoredKey::Raw(bytes) => BASE64_STANDARD_NO_PAD.encode(bytes),
+            #[cfg(feature = "wasm-js")]
+            StoredKey::CryptoKeyPair(_) => String::new(),
         }
     }
 }
 
 impl From<[u8; 32]> for StoredKey {
     fn from(value: [u8; 32]) -> Self {
-        StoredKey::Raw(value)
+        StoredKey::Raw(value.to_vec())
     }
 }
 
@@ -71,10 +105,7 @@ impl TryFrom<Vec<u8>> for StoredKey {
     type Error = DecodeError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        let bytes: [u8; 32] = value
-            .try_into()
-            .map_err(|_| DecodeError::Ed25519("Invalid slice length".to_string()))?;
-        Ok(StoredKey::Raw(bytes))
+        Ok(StoredKey::Raw(value))
     }
 }
 
@@ -102,6 +133,9 @@ pub enum DecodeError {
     /// converting string-encoded keys back to binary format.
     #[error("Base64 error: {0}")]
     Base64(base64::DecodeError),
+    /// An error related to key decoding or parsing.
+    #[error("Key error: {0}")]
+    Key(String),
 }
 
 /// Error type for storage operations.
@@ -155,9 +189,9 @@ mod tests {
         let signing_key = SigningKey::generate(&mut rng);
         let raw_key = signing_key.to_bytes();
 
-        let encoded = StoredKey::Raw(raw_key).encode();
+        let encoded = StoredKey::Raw(raw_key.to_vec()).encode();
         let key = StoredKey::String(encoded);
-        let decoded = key.decode().unwrap();
+        let decoded = key.decode_ed25519().unwrap();
         assert_eq!(raw_key, decoded);
     }
 }

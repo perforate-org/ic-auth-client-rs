@@ -28,14 +28,57 @@ impl DelegationChain {
         }
     }
 
-    /// Deserialize a [`DelegationChain`] from a JSON string.
+    /// Deserialize a [`DelegationChain`] from a JSON string (Rust format with snake_case).
     pub fn from_json(json: &str) -> Self {
         serde_json::from_str(json).expect("Failed to parse delegation chain")
     }
 
-    /// Serialize a [`DelegationChain`] to a JSON string.
+    /// Serialize a [`DelegationChain`] to a JSON string (Rust format with snake_case).
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("Failed to serialize delegation chain")
+    }
+
+    /// Serialize a [`DelegationChain`] to JS-compatible JSON format.
+    ///
+    /// This format uses camelCase keys and hex-encoded binary data,
+    /// compatible with the JavaScript `icp-js-auth` library.
+    #[cfg(feature = "wasm-js")]
+    pub fn to_js_json(&self) -> String {
+        use crate::storage::js_compat::JsDelegationChain;
+        let js_chain = JsDelegationChain::from_delegation_chain(self);
+        serde_json::to_string(&js_chain).expect("Failed to serialize delegation chain to JS format")
+    }
+
+    /// Deserialize a [`DelegationChain`] from JS-compatible JSON format.
+    ///
+    /// This format uses camelCase keys and hex-encoded binary data,
+    /// compatible with the JavaScript `icp-js-auth` library.
+    #[cfg(feature = "wasm-js")]
+    pub fn from_js_json(json: &str) -> Result<Self, crate::storage::DecodeError> {
+        use crate::storage::js_compat::JsDelegationChain;
+        let js_chain: JsDelegationChain = serde_json::from_str(json).map_err(|e| {
+            crate::storage::DecodeError::Key(format!("Invalid JS delegation JSON: {}", e))
+        })?;
+        js_chain.to_delegation_chain()
+    }
+
+    /// Deserialize a [`DelegationChain`] from either JS or Rust JSON format.
+    ///
+    /// Automatically detects the format based on the JSON structure.
+    #[cfg(feature = "wasm-js")]
+    pub fn from_any_json(json: &str) -> Result<Self, crate::storage::DecodeError> {
+        use crate::storage::js_compat::{DelegationFormat, detect_delegation_format};
+
+        match detect_delegation_format(json) {
+            DelegationFormat::Js => Self::from_js_json(json),
+            DelegationFormat::Rust => Ok(Self::from_json(json)),
+            DelegationFormat::Unknown => {
+                // Try Rust format first, then JS format
+                serde_json::from_str(json)
+                    .map_err(|e| crate::storage::DecodeError::Key(e.to_string()))
+                    .or_else(|_| Self::from_js_json(json))
+            }
+        }
     }
 
     /// Analyze a [`DelegationChain`] and validate that it's valid, ie. not expired and apply to the scope.

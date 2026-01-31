@@ -36,7 +36,7 @@ ic-agent = { version = "0.45", default-features = false, features = [
 ] }
 ic-auth-client = { path = "../../../../", features = ["tracing"] }
 leptos = { version = "0.8.15", features = ["csr"] }
-leptos-fetch = "0.4.9"
+leptos-fetch = { version = "0.4.9", features = ["devtools"] }
 leptos_meta = "0.8.5"
 leptos_router = "0.8.11"
 reactive_stores = "0.3"

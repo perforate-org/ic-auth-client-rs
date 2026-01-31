@@ -8,6 +8,7 @@ use leptos::{
     prelude::*,
     task::spawn_local,
 };
+use leptos_fetch::QueryClient;
 use reactive_stores::Store;
 use std::sync::Arc;
 use util::{
@@ -20,12 +21,10 @@ pub use backend::BackendActor;
 
 const IDENTITY_PROVIDER: &str = "https://id.ai";
 
-const AUTH_POPUP_HEIGHT: u32 = 625;
 const AUTH_POPUP_WIDTH: u32 = 576;
-
-// Guided upgrade flow (legacy users -> id.ai) requires:
-// const IDENTITY_PROVIDER: &str = "https://id.ai/?feature_flag_guided_upgrade=true";
-// const AUTH_POPUP_HEIGHT: u32 = 826;
+// we need to temporarily increase the height so II 2.0 in "guided mode" fits the popup
+// TODO: revert to 625 after II provides a fix on their end
+const AUTH_POPUP_HEIGHT: u32 = 826;
 
 pub type AuthStore = Store<Auth>;
 
@@ -113,8 +112,10 @@ impl Auth {
     pub fn logout(store: AuthStore) {
         if let Some(client) = store.auth_client().get() {
             let client_clone = client.clone();
+            let query_client: QueryClient = expect_context();
             spawn_local(async move {
                 client_clone.logout(None).await;
+                query_client.clear();
                 if let Some(updated_client) = store.auth_client().get_untracked() {
                     console_log("Logged off successfully");
                     Auth::update_with_client(store, updated_client);

@@ -3,6 +3,7 @@ import {
   type InternetIdentityAuthResponseSuccess,
 } from "@icp-sdk/auth/client";
 import { Ed25519PublicKey } from "@icp-sdk/core/identity";
+import { Secp256k1PublicKey } from "@icp-sdk/core/identity/secp256k1";
 import { Principal } from "@icp-sdk/core/principal";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
@@ -16,6 +17,7 @@ export const URL_PARAMS = {
   DERIVATION_ORIGIN: "derivationOrigin",
   WINDOW_OPENER_FEATURES: "windowOpenerFeatures",
   CUSTOM_VALUES: "customValues",
+  KEY_TYPE: "keyType",
 } as const;
 
 /** Serialized delegation payload returned to the client. */
@@ -57,10 +59,24 @@ export type LoginOptions = {
   customValues?: Record<string, unknown>;
 };
 
+type KeyType = "Ed25519" | "Prime256v1" | "Secp256k1";
+
+function parseKeyType(value: string): KeyType {
+  switch (value) {
+    case "Ed25519":
+    case "Prime256v1":
+    case "Secp256k1":
+      return value;
+    default:
+      throw new Error(`Unsupported keyType: ${value}`);
+  }
+}
+
 /** Parameters parsed from the integration redirect URL. */
 export type Params = {
   redirectUri: string;
-  publicKey: Ed25519PublicKey;
+  publicKey: Uint8Array;
+  keyType?: KeyType;
   identityProvider?: string;
   maxTimeToLive?: bigint;
   allowPinAuthentication?: boolean;
@@ -69,12 +85,40 @@ export type Params = {
   customValues?: Record<string, unknown>;
 };
 
-/** Decode a hex-encoded public key into Ed25519 format. */
-function createPublicKeyFromHex(pubKey: string): Ed25519PublicKey {
+/** Decode a hex-encoded public key into a DER-encoded byte array. */
+function createPublicKeyFromHex(pubKey: string, keyType?: KeyType): Uint8Array {
+  const bytes = hexToBytes(pubKey);
+
+  if (keyType === "Ed25519") {
+    try {
+      return Ed25519PublicKey.fromDer(bytes).toDer();
+    } catch (e) {
+      throw new Error(`Invalid Ed25519 public key format: ${e}`);
+    }
+  }
+
+  if (keyType === "Secp256k1") {
+    try {
+      return Secp256k1PublicKey.fromDer(bytes).toDer();
+    } catch (e) {
+      throw new Error(`Invalid Secp256k1 public key format: ${e}`);
+    }
+  }
+
+  if (keyType === "Prime256v1") {
+    return bytes;
+  }
+
   try {
-    return Ed25519PublicKey.fromDer(hexToBytes(pubKey));
-  } catch (e) {
-    throw new Error(`Invalid public key format: ${e}`);
+    return Ed25519PublicKey.fromDer(bytes).toDer();
+  } catch (ed25519Error) {
+    try {
+      return Secp256k1PublicKey.fromDer(bytes).toDer();
+    } catch (secpError) {
+      throw new Error(
+        `Invalid public key format (Ed25519: ${ed25519Error}, Secp256k1: ${secpError})`,
+      );
+    }
   }
 }
 
@@ -124,16 +168,19 @@ export function parseParams(locationHref: string): Params {
 
   const redirectUriParam = params.get(URL_PARAMS.REDIRECT_URI);
   const pubKey = params.get(URL_PARAMS.PUBKEY);
+  const keyTypeParam = getOptionalParam(URL_PARAMS.KEY_TYPE);
+  const keyType = keyTypeParam ? parseKeyType(keyTypeParam) : undefined;
 
   if (!redirectUriParam || !pubKey) {
     throw new Error("Missing redirect_uri or pubkey in query string");
   }
 
-  const publicKey = createPublicKeyFromHex(pubKey);
+  const publicKey = createPublicKeyFromHex(pubKey, keyType);
 
   return {
     redirectUri: decodeURIComponent(redirectUriParam),
     publicKey,
+    keyType,
     identityProvider: getOptionalParam(URL_PARAMS.IDENTITY_PROVIDER),
     maxTimeToLive: getOptionalBigIntParam(URL_PARAMS.MAX_TIME_TO_LIVE),
     allowPinAuthentication: getOptionalBooleanParam(
@@ -164,7 +211,8 @@ export async function createAuthClient(
   identityProvider?: string,
 ) {
   return AuthClient.create({
-    keyType: "Ed25519",
+    keyType:
+      params.keyType && params.keyType !== "Ed25519" ? "ECDSA" : "Ed25519",
     loginOptions: buildLoginOptions(params, identityProvider),
   });
 }
@@ -181,7 +229,7 @@ function buildLoginOptions(
     windowOpenerFeatures: params.windowOpenerFeatures,
     customValues: {
       ...params.customValues,
-      sessionPublicKey: new Uint8Array(params.publicKey.toDer()),
+      sessionPublicKey: new Uint8Array(params.publicKey),
     },
   };
 }

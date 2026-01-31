@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Support for multiple key types in `AuthClient` (Ed25519, P-256, secp256k1) with key-type metadata in storage.
+- WebCrypto P-256 key generation/import/export for `wasm-js`.
+- IndexedDB-backed async storage with LocalStorage fallback and migration for `wasm-js`.
+- JS/Rust storage format compatibility helpers plus Playwright-based compat tests.
+- `make clean` target for removing example build artifacts, plus new Makefile check/test targets.
+
+### Changed
+
+- Enabled the `rust-analyzer` feature and tightened the wasm target guard.
+- Updated frontend examples (auth/note handling, todo refresh on auth state change).
+- Updated Internet Identity canister configs and example `dfx.json` settings; deploy Makefile targets removed in favor of `dfx deploy`.
+- Bumped npm package version to `0.0.2`, adjusted dependency versions, removed package-locks, and ignored example `Cargo.lock` files.
+
+### Fixed
+
+- Handle JS Ed25519 key-length variants during format detection.
+- Temporarily increased the auth popup height for II 2.0.
+
 ## [0.5.0-beta.0] - 2026-01-19
 
 ### Added

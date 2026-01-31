@@ -4,6 +4,7 @@ target/
 **/*.rs.bk
 *.pdb
 Cargo.lock
+examples/**/Cargo.lock
 pkg/
 
 # JavaScript

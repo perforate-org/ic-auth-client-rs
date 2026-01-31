@@ -2,6 +2,4 @@
 exclude = ["examples", "target", "**/node_modules", "**/dist"]
 
 [cargo]
-# for native
-# noDefaultFeatures = true
-# features = ["native", "tracing"]
+features = ["native", "rust-analyzer"]

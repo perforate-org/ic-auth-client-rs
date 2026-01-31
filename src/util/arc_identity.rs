@@ -1,4 +1,7 @@
-use ic_agent::identity::{AnonymousIdentity, BasicIdentity, DelegatedIdentity, Identity};
+use ic_agent::identity::{
+    AnonymousIdentity, BasicIdentity, DelegatedIdentity, Identity, Prime256v1Identity,
+    Secp256k1Identity,
+};
 use std::{fmt, sync::Arc};
 
 /// Arc-wrapped identity that can be one of several identity types.
@@ -13,6 +16,10 @@ pub enum ArcIdentity {
     Ed25519(Arc<BasicIdentity>),
     /// A delegated identity that uses delegation chains for authentication.
     Delegated(Arc<DelegatedIdentity>),
+    /// A Prime256v1 (P-256/secp256r1) ECDSA-based identity.
+    Prime256v1(Arc<Prime256v1Identity>),
+    /// A Secp256k1 ECDSA-based identity.
+    Secp256k1(Arc<Secp256k1Identity>),
 }
 
 impl Default for ArcIdentity {
@@ -27,6 +34,8 @@ impl fmt::Debug for ArcIdentity {
             ArcIdentity::Anonymous(_) => write!(f, "ArcIdentity::Anonymous"),
             ArcIdentity::Ed25519(_) => write!(f, "ArcIdentity::Ed25519"),
             ArcIdentity::Delegated(_) => write!(f, "ArcIdentity::Delegated"),
+            ArcIdentity::Prime256v1(_) => write!(f, "ArcIdentity::Prime256v1"),
+            ArcIdentity::Secp256k1(_) => write!(f, "ArcIdentity::Secp256k1"),
         }
     }
 }
@@ -40,6 +49,8 @@ impl ArcIdentity {
             ArcIdentity::Anonymous(id) => id.clone(),
             ArcIdentity::Ed25519(id) => id.clone(),
             ArcIdentity::Delegated(id) => id.clone(),
+            ArcIdentity::Prime256v1(id) => id.clone(),
+            ArcIdentity::Secp256k1(id) => id.clone(),
         }
     }
 
@@ -52,6 +63,8 @@ impl ArcIdentity {
             ArcIdentity::Anonymous(id) => id.public_key(),
             ArcIdentity::Ed25519(id) => id.public_key(),
             ArcIdentity::Delegated(id) => id.public_key(),
+            ArcIdentity::Prime256v1(id) => id.public_key(),
+            ArcIdentity::Secp256k1(id) => id.public_key(),
         }
     }
 }
@@ -71,5 +84,17 @@ impl From<ic_agent::identity::BasicIdentity> for ArcIdentity {
 impl From<DelegatedIdentity> for ArcIdentity {
     fn from(identity: DelegatedIdentity) -> Self {
         ArcIdentity::Delegated(Arc::new(identity))
+    }
+}
+
+impl From<Prime256v1Identity> for ArcIdentity {
+    fn from(identity: Prime256v1Identity) -> Self {
+        ArcIdentity::Prime256v1(Arc::new(identity))
+    }
+}
+
+impl From<Secp256k1Identity> for ArcIdentity {
+    fn from(identity: Secp256k1Identity) -> Self {
+        ArcIdentity::Secp256k1(Arc::new(identity))
     }
 }

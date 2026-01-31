@@ -1,6 +1,6 @@
 {
   "name": "@perforate/ic-auth-bridge",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Internet Identity integration helpers for native ic-auth-client",
   "type": "module",
   "license": "Apache-2.0 OR MIT",

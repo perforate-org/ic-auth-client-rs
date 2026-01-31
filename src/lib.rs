@@ -7,6 +7,13 @@
 #[cfg(not(any(feature = "native", feature = "wasm-js")))]
 compile_error!("Either feature \"native\" or \"wasm-js\" must be enabled for this crate");
 
+#[cfg(all(
+    feature = "wasm-js",
+    not(target_family = "wasm"),
+    not(feature = "rust-analyzer")
+))]
+compile_error!("feature \"wasm-js\" requires a wasm target (wasm32 or wasm64)");
+
 #[cfg(feature = "tracing")]
 #[macro_use]
 extern crate tracing;

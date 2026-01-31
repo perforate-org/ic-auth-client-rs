@@ -19,8 +19,11 @@ mod backend;
 pub use backend::BackendActor;
 
 const IDENTITY_PROVIDER: &str = "https://id.ai";
-const AUTH_POPUP_HEIGHT: u32 = 625;
+
 const AUTH_POPUP_WIDTH: u32 = 576;
+// we need to temporarily increase the height so II 2.0 in "guided mode" fits the popup
+// TODO: revert to 625 after II provides a fix on their end
+const AUTH_POPUP_HEIGHT: u32 = 826;
 
 // Guided upgrade flow (legacy users -> id.ai) requires:
 // const IDENTITY_PROVIDER: &str = "https://id.ai/?feature_flag_guided_upgrade=true";

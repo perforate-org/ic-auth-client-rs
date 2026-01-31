@@ -1,8 +1,7 @@
 use anyhow::Result;
 use gpui::prelude::*;
 use gpui::{
-    App, Application, Axis, Context, Entity, Render, WeakEntity, Window, WindowOptions, div, px,
-    rems,
+    App, Application, Context, Entity, Render, WeakEntity, Window, WindowOptions, div, px, rems,
 };
 use gpui_component::button::ButtonVariants;
 use gpui_component::{
@@ -84,6 +83,9 @@ impl TodoApp {
     }
 
     fn start_signal_listener(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.auth.state, AuthState::Authenticated(_)) {
+            self.refresh_todos(cx);
+        }
         let signal_rx = self.auth.signal_receiver();
         let window_handle = self.window_handle;
         cx.spawn(async move |this: WeakEntity<Self>, cx| {

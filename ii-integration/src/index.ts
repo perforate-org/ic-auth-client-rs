@@ -9,12 +9,10 @@ import {
 /** Default identity provider fallback when not using local/dev URLs. */
 const identityProvider = "https://id.ai";
 
-const AUTH_POPUP_HEIGHT = 625;
 const AUTH_POPUP_WIDTH = 576;
-
-/** Guided upgrade flow (legacy users -> id.ai) requires: */
-// const identityProvider = "https://id.ai/?feature_flag_guided_upgrade=true";
-// const AUTH_POPUP_HEIGHT = 826;
+// we need to temporarily increase the height so II 2.0 in "guided mode" fits the popup
+// TODO: revert to 625 after II provides a fix on their end
+const AUTH_POPUP_HEIGHT = 826;
 
 /** Boot the page flow and handle top-level errors. */
 async function main() {
@@ -49,7 +47,11 @@ async function startLogin(button: HTMLButtonElement, params: Params) {
 
   try {
     const authClient = await createAuthClient(params, identityProvider);
-    startLoginCore(authClient, params.redirectUri, popupCenter({ height: AUTH_POPUP_HEIGHT, width: AUTH_POPUP_WIDTH }));
+    startLoginCore(
+      authClient,
+      params.redirectUri,
+      popupCenter({ height: AUTH_POPUP_HEIGHT, width: AUTH_POPUP_WIDTH }),
+    );
   } catch (error) {
     button.disabled = false;
     button.removeAttribute("aria-busy");

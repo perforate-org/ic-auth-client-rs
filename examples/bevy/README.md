@@ -17,7 +17,7 @@ for this Internet Identity example.
 1. Start a local replica and deploy the example canisters from the repo root:
    ```bash
    dfx start --background
-   make deploy
+   dfx deploy
    ```
 2. Build the Internet Identity integration assets (only needed when they
    change):
@@ -28,7 +28,7 @@ for this Internet Identity example.
    ```bash
    cargo run
    ```
-   The game window will display a login overlay. Clicking “IIでログイン” opens
+   The game window will display a login overlay. Clicking “LOGIN” opens
    Internet Identity; after authenticating, the game transitions into play.
 
 ### Storage backend

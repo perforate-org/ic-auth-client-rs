@@ -12,7 +12,7 @@
   "author": "",
   "license": "Apache-2.0 OR MIT",
   "dependencies": {
-    "@perforate/ic-auth-bridge": "^0.0.1"
+    "@perforate/ic-auth-bridge": "^0.0.2"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

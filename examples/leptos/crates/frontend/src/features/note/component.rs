@@ -1,4 +1,5 @@
 use crate::contexts::auth::{AuthStore, AuthStoreFields, use_auth};
+use candid::Principal;
 use domain::note::{NoteId, NoteTitle, entity::Note};
 use leptos::{
     either::Either,
@@ -19,7 +20,7 @@ async fn fetch_note(id: Option<NoteId>) -> Option<Note> {
         .await
 }
 
-async fn fetch_note_list() -> Vec<(NoteId, NoteTitle)> {
+async fn fetch_note_list(_principal: Option<Principal>) -> Vec<(NoteId, NoteTitle)> {
     match use_auth().unwrap().backend().get_untracked() {
         Some(backend) => backend.fetch_note_list().await,
         None => {
@@ -43,7 +44,7 @@ pub fn NoteComponent() -> impl IntoView {
     let check_title_validity = Trigger::new();
 
     let client: QueryClient = expect_context();
-    let note_list_resource = client.resource(fetch_note_list, || ());
+    let note_list_resource = client.resource(fetch_note_list, move || auth.principal().get());
     let note_resource = client.resource(fetch_note, move || active_note_id.get());
 
     {
@@ -247,6 +248,16 @@ fn NoteEditor(
 ) -> impl IntoView {
     let readonly = move || note_resource.get().is_none() || post_note.pending().get();
 
+    Effect::new(move |_| {
+        let note = note_resource.get();
+        inputs.title_ref().track();
+        inputs.content_ref().track();
+
+        if let Some(Some(note)) = note {
+            inputs.populate_from_note(&note);
+        }
+    });
+
     let is_title_invalid = Memo::new(move |_| {
         check_title_validity.track();
         inputs
@@ -266,38 +277,47 @@ fn NoteEditor(
         )
     };
 
+    let show_placeholder =
+        move || is_init.get() || list.get().is_empty() || active_note_id.get().is_none();
+
+    let placeholder_text = move || {
+        if is_init.get() {
+            "Loading..."
+        } else if list.get().is_empty() {
+            "Press \"New Note\" to create a note"
+        } else {
+            "Select a note to start editing"
+        }
+    };
+
     view! {
         <div class="w-full h-full">
-            <Transition
+            <Show
+                when=move || !show_placeholder()
                 fallback=move || {
                     view! {
                         <div
                             class="justify-center items-center w-full h-full flex pointer-events-none"
                         >
-                            <p class="text-stone-500 dark:text-stone-400">
-                                {
-                                    move || {
-                                        if is_init.get() {
-                                            "Loading..."
-                                        } else if list.get_untracked().is_empty() {
-                                            "Press \"New Note\" to create a note"
-                                        } else {
-                                            "Select a note to start editing"
-                                        }
-                                    }
-                                }
-                            </p>
-                        </div>}
-                }>
+                            <p class="text-stone-500 dark:text-stone-400">{placeholder_text}</p>
+                        </div>
+                    }
+                }
+            >
+                <Transition
+                    fallback=move || {
+                        view! {
+                            <div
+                                class="justify-center items-center w-full h-full flex pointer-events-none"
+                            >
+                                <p class="text-stone-500 dark:text-stone-400">Loading...</p>
+                            </div>
+                        }
+                    }
+                >
                     {
                         move || {
                             Suspend::new(async move {
-                                let note = note_resource.await;
-
-                                if let Some(note) = note {
-                                    inputs.populate_from_note(&note);
-                                }
-
                                 view! {
                                     <form
                                         method="POST"
@@ -335,38 +355,39 @@ fn NoteEditor(
                                                                 .expect("Title truncated to 50 chars should be valid")
                                                             }
                                                         };
-                                                        list.update(|list| {
-                                                            if let Some(id) = active_note_id.get_untracked() && let Some(title_signal) = list.get_mut(&id) {
-                                                                title_signal.set(title);
-                                                            }
-                                                        });
-                                                    }
+                                                    list.update(|list| {
+                                                        if let Some(id) = active_note_id.get_untracked() && let Some(title_signal) = list.get_mut(&id) {
+                                                            title_signal.set(title);
+                                                        }
+                                                    });
                                                 }
-                                            />
-                                            <div
-                                                class="absolute px-2 ml-1 bg-red-500 rounded py-[0.125rem] mt-[-0.9rem]"
-                                                style:display=move || if is_title_invalid.get() { "block" } else { "none" }
-                                            >
-                                                <p class="text-xs text-stone-100">"Title is up to 50 characters long"</p>
-                                            </div>
-                                            <input
-                                                class=submit_class
-                                                type="submit"
-                                                disabled=readonly
-                                                value="Save"
-                                            />
+                                            }
+                                        />
+                                        <div
+                                            class="absolute px-2 ml-1 bg-red-500 rounded py-[0.125rem] mt-[-0.9rem]"
+                                            style:display=move || if is_title_invalid.get() { "block" } else { "none" }
+                                        >
+                                            <p class="text-xs text-stone-100">"Title is up to 50 characters long"</p>
                                         </div>
-                                        <textarea
-                                            node_ref=inputs.content_ref()
-                                            readonly=readonly
-                                            class="flex-grow py-2 px-4 w-full bg-transparent rounded resize-none outline-0"
-                                        ></textarea>
-                                    </form>
-                                }
-                            })
-                        }
+                                        <input
+                                            class=submit_class
+                                            type="submit"
+                                            disabled=readonly
+                                            value="Save"
+                                        />
+                                    </div>
+                                    <textarea
+                                        node_ref=inputs.content_ref()
+                                        readonly=readonly
+                                        class="flex-grow py-2 px-4 w-full bg-transparent rounded resize-none outline-0"
+                                    ></textarea>
+                                </form>
+                            }
+                        })
                     }
-            </Transition>
+                }
+                </Transition>
+            </Show>
         </div>
     }
 }

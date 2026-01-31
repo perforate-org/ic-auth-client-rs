@@ -17,7 +17,7 @@ Then, in a second terminal, deploy your canisters and start the Dioxus developme
 Tailwind watch also needs its own terminal while running, so use a third terminal for it:
 
 ```bash
-make deploy
+dfx deploy
 
 make tailwind-watch
 

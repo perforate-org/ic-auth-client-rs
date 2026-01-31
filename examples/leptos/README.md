@@ -13,7 +13,7 @@ dfx start
 Then, in a second terminal, deploy your canisters and start the Trunk development server:
 
 ```bash
-make deploy
+dfx deploy
 
 trunk serve
 ```

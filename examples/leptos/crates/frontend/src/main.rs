@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_fetch::QueryClient;
+use leptos_fetch::{QueryClient, QueryDevtools};
 use leptos_meta::*;
 
 mod contexts;
@@ -11,9 +11,10 @@ use routes::AppRouter;
 
 #[component]
 fn App() -> impl IntoView {
-    QueryClient::new().provide();
+    let client = QueryClient::new().provide();
 
     view! {
+        <QueryDevtools client=client />
         <AppRouter />
     }
 }

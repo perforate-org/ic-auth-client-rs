@@ -9,7 +9,8 @@ use crate::{
 pub struct AuthClientCreateOptions {
     /// An optional identity to use as the base. If not provided, an `Ed25519` key pair will be used.
     pub identity: Option<ArcIdentity>,
-    /// Optional storage with get, set, and remove methods. Currently only `LocalStorage` is supported.
+    /// Optional storage with get, set, and remove methods. If not provided, `IdbStorage` (or
+    /// `LocalStorage` as a fallback) will be used.
     #[builder(into)]
     pub storage: Option<Box<dyn AuthClientStorage>>,
     /// The type of key to use for the base key. If not provided, `Ed25519` will be used by default.
