@@ -1,0 +1,46 @@
+[package]
+publish = false
+name = "frontend"
+version = "0.0.1"
+edition = "2024"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = 2
+
+# For build scripts and proc-macros.
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release]
+lto = true
+opt-level = "z"
+codegen-units = 1
+strip = true
+target = "wasm32-unknown-unknown"
+panic = "abort"
+
+[dependencies]
+candid.workspace = true
+console_error_panic_hook = "0.1.7"
+domain = { workspace = true, features = ["dto"] }
+futures = { version = "0.3.31", default-features = false }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+ic-agent = { version = "0.45", default-features = false, features = [
+    "wasm-bindgen",
+] }
+ic-auth-client = { path = "../../../../../", features = ["tracing"] }
+leptos = { version = "0.8.15", features = ["csr"] }
+leptos-fetch = { version = "0.4.9", features = ["devtools"] }
+leptos_meta = "0.8.5"
+leptos_router = "0.8.11"
+reactive_stores = "0.3"
+serde.workspace = true
+tracing-wasm = "0.2.1"
+util.workspace = true
+web-sys = { version = "0.3", features = ["Window", "Navigator", "Document"] }

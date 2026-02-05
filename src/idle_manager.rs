@@ -48,8 +48,16 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-#[cfg(feature = "native")]
+#[cfg(all(
+    feature = "native",
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 mod native;
+#[cfg(all(
+    feature = "native",
+    not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+))]
+mod native_stub;
 #[cfg(not(feature = "native"))]
 mod wasm_js;
 
@@ -87,9 +95,20 @@ impl IdleManager {
 
     /// Constructs a new [`IdleManager`] with the given options.
     pub fn new(options: Option<IdleManagerOptions>) -> Self {
-        #[cfg(feature = "native")]
+        #[cfg(all(
+            feature = "native",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        ))]
         {
             Self::new_native(options)
+        }
+
+        #[cfg(all(
+            feature = "native",
+            not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        ))]
+        {
+            Self::new_native_stub(options)
         }
 
         #[cfg(not(feature = "native"))]
@@ -100,9 +119,20 @@ impl IdleManager {
 
     /// Exits the idle state, cancels any timeouts, removes event listeners, and executes all registered callbacks.
     pub fn exit(&mut self) {
-        #[cfg(feature = "native")]
+        #[cfg(all(
+            feature = "native",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        ))]
         {
             self.exit_native();
+        }
+
+        #[cfg(all(
+            feature = "native",
+            not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        ))]
+        {
+            self.exit_native_stub();
         }
 
         #[cfg(not(feature = "native"))]
@@ -113,9 +143,20 @@ impl IdleManager {
 
     /// Resets the idle timer, cancelling any existing timeout and setting a new one.
     pub fn reset_timer(&self) {
-        #[cfg(feature = "native")]
+        #[cfg(all(
+            feature = "native",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        ))]
         {
             self.reset_timer_native();
+        }
+
+        #[cfg(all(
+            feature = "native",
+            not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        ))]
+        {
+            self.reset_timer_native_stub();
         }
 
         #[cfg(not(feature = "native"))]

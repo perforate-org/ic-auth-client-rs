@@ -2,17 +2,17 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-#![doc = document_features::document_features!()]
+
+//! ## Features
+//!
+//! - `keyring` --- Enable secure store relying on platform for `native` feature
+//! - `pem` --- Enable PEM support for `native` feature
+//! - `native` --- Enable native platform support (needs one of `keyring` or `pem` feature)
+//! - `tracing` --- Enable logging with [tracing](https://crates.io/crates/tracing)
+//! - `wasm-js` *(enabled by default)* --- Enable WebView support
 
 #[cfg(not(any(feature = "native", feature = "wasm-js")))]
 compile_error!("Either feature \"native\" or \"wasm-js\" must be enabled for this crate");
-
-#[cfg(all(
-    feature = "wasm-js",
-    not(target_family = "wasm"),
-    not(feature = "rust-analyzer")
-))]
-compile_error!("feature \"wasm-js\" requires a wasm target (wasm32 or wasm64)");
 
 #[cfg(feature = "tracing")]
 #[macro_use]
@@ -34,3 +34,9 @@ pub use option::native::NativeAuthClientCreateOptions;
 pub use option::wasm_js::AuthClientCreateOptions;
 pub use option::{AuthClientLoginOptions, IdleOptions};
 pub use util::{arc_identity::ArcIdentity, callback, delegation_chain};
+
+#[cfg(feature = "uniffi")]
+mod uniffi_bindings;
+
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();

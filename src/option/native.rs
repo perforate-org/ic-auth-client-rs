@@ -2,7 +2,7 @@
 
 use crate::{ArcIdentity, IdleOptions, key::BaseKeyType, storage::sync_storage::AuthClientStorage};
 
-/// Options for creating a new [`NativeAuthClient`].
+/// Options for creating a new [`NativeAuthClient`](crate::NativeAuthClient).
 #[derive(bon::Builder)]
 pub struct NativeAuthClientCreateOptions {
     /// An optional identity to use as the base. If not provided, an `Ed25519` key pair will be used.

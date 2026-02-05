@@ -123,7 +123,7 @@ impl AuthClient {
     /// Default time to live for the session in nanoseconds (8 hours).
     const DEFAULT_TIME_TO_LIVE: u64 = 8 * 60 * 60 * 1_000_000_000;
 
-    /// Create a new [`AuthClientBuilder`] for building an AuthClient.
+    /// Create a new builder.
     pub fn builder() -> AuthClientBuilder {
         AuthClientBuilder::new()
     }

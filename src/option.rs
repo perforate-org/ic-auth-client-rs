@@ -13,7 +13,7 @@ pub mod native;
 #[cfg(feature = "wasm-js")]
 pub mod wasm_js;
 
-/// Options for the [`AuthClient::login_with_options`].
+/// Options for the [`AuthClient::login_with_options`](crate::AuthClient::login_with_options).
 #[derive(Clone, Default, bon::Builder)]
 #[builder(on(String, into))]
 pub struct AuthClientLoginOptions {
@@ -63,6 +63,6 @@ pub struct IdleOptions {
     pub disable_idle: Option<bool>,
     /// If set to `true`, disables the default idle timeout callback.
     pub disable_default_idle_callback: Option<bool>,
-    /// Options for the [`IdleManager`] that handles idle timeouts.
+    /// Options for the [`IdleManager`](crate::idle_manager::IdleManager) that handles idle timeouts.
     pub idle_manager_options: IdleManagerOptions,
 }

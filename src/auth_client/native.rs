@@ -32,6 +32,10 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
 };
+#[cfg(all(
+    feature = "native",
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 use tiny_http::{Response, Server};
 use url::Url;
 
@@ -110,7 +114,7 @@ impl fmt::Debug for AuthClientInner {
 pub struct NativeAuthClient(Arc<AuthClientInner>);
 
 impl NativeAuthClient {
-    /// Creates a new [`AuthClient`] with default options.
+    /// Creates a new [`NativeAuthClient`] with default options.
     #[cfg(feature = "keyring")]
     pub fn new<T: AsRef<str>>(service_name: T) -> Result<Self, AuthClientError> {
         let options = NativeAuthClientCreateOptions::builder()
@@ -119,7 +123,7 @@ impl NativeAuthClient {
         Self::new_with_options(options)
     }
 
-    /// Creates a new [`AuthClient`] using the first PEM file found inside the provided directory.
+    /// Creates a new [`NativeAuthClient`] using the first PEM file found inside the provided directory.
     #[cfg(feature = "pem")]
     pub fn new_with_pem_directory<T, P>(
         service_name: T,
@@ -332,7 +336,7 @@ impl NativeAuthClient {
         }
     }
 
-    /// Creates a new [`AuthClient`] with the provided options.
+    /// Creates a new [`NativeAuthClient`] with the provided options.
     pub fn new_with_options(
         options: NativeAuthClientCreateOptions,
     ) -> Result<Self, AuthClientError> {
@@ -384,6 +388,55 @@ impl NativeAuthClient {
     /// Returns the principal of the user.
     pub fn principal(&self) -> Result<Principal, String> {
         self.identity().sender()
+    }
+
+    /// Returns the current delegation chain as JSON, if present.
+    #[cfg(feature = "uniffi")]
+    pub fn delegation_chain_json(&self) -> Option<String> {
+        self.0.chain.lock().as_ref().map(|chain| chain.to_json())
+    }
+
+    /// Returns the base key type when known.
+    #[cfg(feature = "uniffi")]
+    pub fn base_key_type(&self) -> Option<BaseKeyType> {
+        match &self.0.key {
+            Key::WithRaw(key) => Some(key.key_type()),
+            Key::Identity(identity) => BaseKeyType::from_identity(identity),
+        }
+    }
+
+    /// Returns the uncompressed secp256k1 public key (65 bytes, 0x04 prefix).
+    #[cfg(feature = "uniffi")]
+    pub fn secp256k1_uncompressed_public_key(&self) -> Result<Vec<u8>, String> {
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+        match &self.0.key {
+            Key::WithRaw(key) => {
+                if key.key_type() != BaseKeyType::Secp256k1 {
+                    return Err("Base key is not secp256k1".to_string());
+                }
+                let secret =
+                    K256SecretKey::from_sec1_der(key.raw_key()).map_err(|e| e.to_string())?;
+                let public_key = secret.public_key();
+                Ok(public_key.to_encoded_point(false).as_bytes().to_vec())
+            }
+            Key::Identity(_) => Err("Raw secp256k1 key material is not available".to_string()),
+        }
+    }
+
+    /// Returns the raw 32-byte secp256k1 private key.
+    #[cfg(feature = "uniffi")]
+    pub fn secp256k1_private_key(&self) -> Result<Vec<u8>, String> {
+        match &self.0.key {
+            Key::WithRaw(key) => {
+                if key.key_type() != BaseKeyType::Secp256k1 {
+                    return Err("Base key is not secp256k1".to_string());
+                }
+                let secret =
+                    K256SecretKey::from_sec1_der(key.raw_key()).map_err(|e| e.to_string())?;
+                Ok(secret.to_bytes().to_vec())
+            }
+            Key::Identity(_) => Err("Raw secp256k1 key material is not available".to_string()),
+        }
     }
 
     /// Checks if the user is authenticated.
@@ -568,6 +621,10 @@ impl NativeAuthClient {
     }
 
     /// Handles the redirect from the identity provider.
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn handle_get_redirect(request: tiny_http::Request, tx: oneshot::Sender<CallbackResult>) {
         let url = match Url::parse(&format!("http://localhost{}", request.url())) {
             Ok(url) => url,
@@ -618,6 +675,10 @@ impl NativeAuthClient {
     }
 
     /// Handles incoming POST requests with authentication data.
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn handle_post_callback(request: tiny_http::Request, tx: oneshot::Sender<CallbackResult>) {
         let mut request = request;
         let mut content = String::new();
@@ -647,73 +708,45 @@ impl NativeAuthClient {
         Self::respond_with_callback(request, tx, Self::process_auth_payload(json, false));
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn process_auth_payload(
         json: serde_json::Value,
         render_html: bool,
     ) -> (Response<std::io::Cursor<Vec<u8>>>, CallbackResult) {
-        let response_type = json["type"].as_str();
-
-        match response_type {
-            Some("success") => {
-                match serde_json::from_value::<AuthResponseSuccess>(json["data"].clone()) {
-                    Ok(success_data) => {
-                        let response = if render_html {
-                            Self::html_response(
-                                "<h1>Login successful</h1><p>You can close this window.</p>",
-                                200,
-                            )
-                        } else {
-                            Self::cors_response("OK", 200)
-                        };
-                        (response, CallbackResult::Success(success_data))
-                    }
-                    Err(e) => {
-                        let response = if render_html {
-                            Self::html_response(
-                                "<h1>Login failed</h1><p>Invalid success payload.</p>",
-                                400,
-                            )
-                        } else {
-                            Self::cors_response("Error parsing success data", 400)
-                        };
-                        (
-                            response,
-                            CallbackResult::Error(NativeLoginError::JsonError(e)),
-                        )
-                    }
-                }
-            }
-            Some("error") => {
-                let error_message = json["data"].as_str().unwrap_or("Unknown error").to_string();
+        match Self::parse_auth_payload_json(json) {
+            Ok(success_data) => {
                 let response = if render_html {
                     Self::html_response(
-                        &format!("<h1>Login failed</h1><p>{}</p>", error_message),
-                        400,
+                        "<h1>Login successful</h1><p>You can close this window.</p>",
+                        200,
                     )
                 } else {
-                    Self::cors_response("Error", 200)
+                    Self::cors_response("OK", 200)
                 };
-                (
-                    response,
-                    CallbackResult::Error(NativeLoginError::Custom(error_message)),
-                )
+                (response, CallbackResult::Success(success_data))
             }
-            _ => {
-                let response = if render_html {
-                    Self::html_response("<h1>Login failed</h1><p>Invalid response type.</p>", 400)
-                } else {
-                    Self::cors_response("Invalid response type", 400)
+            Err(err) => {
+                let status_code = match &err {
+                    NativeLoginError::Custom(message) if message != "Invalid response type" => 200,
+                    _ => 400,
                 };
-                (
-                    response,
-                    CallbackResult::Error(NativeLoginError::Custom(
-                        "Invalid response type".to_string(),
-                    )),
-                )
+                let response = if render_html {
+                    Self::html_response("<h1>Login failed</h1><p>Invalid payload.</p>", status_code)
+                } else {
+                    Self::cors_response("Error", status_code)
+                };
+                (response, CallbackResult::Error(err))
             }
         }
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn respond_with_html_error(
         request: tiny_http::Request,
         tx: oneshot::Sender<CallbackResult>,
@@ -725,6 +758,10 @@ impl NativeAuthClient {
         let _ = request.respond(Self::html_response(&body, 400));
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn respond_with_callback(
         request: tiny_http::Request,
         tx: oneshot::Sender<CallbackResult>,
@@ -735,6 +772,10 @@ impl NativeAuthClient {
         let _ = request.respond(response);
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn html_response(body: &str, status_code: u16) -> Response<std::io::Cursor<Vec<u8>>> {
         Response::from_string(body)
             .with_status_code(status_code)
@@ -744,6 +785,10 @@ impl NativeAuthClient {
             )
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn cors_response(body: &str, status_code: u16) -> Response<std::io::Cursor<Vec<u8>>> {
         let mut response = Response::from_string(body).with_status_code(status_code);
         response = response.with_header(
@@ -800,6 +845,23 @@ impl NativeAuthClient {
         Ok(())
     }
 
+    fn parse_auth_payload_json(
+        json: serde_json::Value,
+    ) -> Result<AuthResponseSuccess, NativeLoginError> {
+        let response_type = json["type"].as_str();
+        match response_type {
+            Some("success") => serde_json::from_value::<AuthResponseSuccess>(json["data"].clone())
+                .map_err(NativeLoginError::JsonError),
+            Some("error") => {
+                let error_message = json["data"].as_str().unwrap_or("Unknown error").to_string();
+                Err(NativeLoginError::Custom(error_message))
+            }
+            _ => Err(NativeLoginError::Custom(
+                "Invalid response type".to_string(),
+            )),
+        }
+    }
+
     /// Finishes the login process after the delegation has been received.
     async fn finish_login(
         &self,
@@ -820,17 +882,21 @@ impl NativeAuthClient {
     }
 
     /// Logs the user in by opening a browser window to the identity provider.
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     pub fn login<T: AsRef<str> + Send + 'static>(
         &self,
-        ii_url: T,
+        auth_bridge_url: T,
         options: AuthClientLoginOptions,
     ) {
         let client = self.clone();
-        let ii_url = ii_url.as_ref().to_string();
+        let auth_bridge_url = auth_bridge_url.as_ref().to_string();
 
         thread::spawn(move || {
             let on_error = options.on_error.clone();
-            if let Err(e) = block_on(client.login_task(ii_url, options)) {
+            if let Err(e) = block_on(client.login_task(auth_bridge_url, options)) {
                 if let Some(on_error) = on_error {
                     on_error.0.lock()(Some(e.to_string()));
                 }
@@ -838,6 +904,38 @@ impl NativeAuthClient {
         });
     }
 
+    /// Builds a login URL for external authentication flows (e.g. iOS ASWebAuthenticationSession).
+    pub fn build_login_url<T: AsRef<str>>(
+        &self,
+        auth_bridge_url: T,
+        redirect_uri: &str,
+        options: AuthClientLoginOptions,
+    ) -> Result<String, NativeLoginError> {
+        let public_key_hex = hex::encode(self.0.key.public_key().unwrap());
+        let key_type = match &self.0.key {
+            Key::WithRaw(key) => Some(key.key_type()),
+            Key::Identity(identity) => BaseKeyType::from_identity(identity),
+        };
+
+        let mut url =
+            Url::parse(auth_bridge_url.as_ref()).map_err(NativeLoginError::UrlParseError)?;
+        Self::set_query_params(&mut url, &options, redirect_uri, &public_key_hex, key_type);
+        Ok(url.to_string())
+    }
+
+    /// Finishes login using a payload string (base64-encoded JSON from the bridge).
+    pub fn finish_login_from_payload(&self, payload: &str) -> Result<(), NativeLoginError> {
+        let mut json = Self::deserialize_payload(payload)?;
+        Self::normalize_delegations(&mut json)?;
+        let success = Self::parse_auth_payload_json(json)?;
+        self.handle_success(success, None)
+            .map_err(NativeLoginError::DelegationError)
+    }
+
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     fn start_http_server(server: Server, tx: oneshot::Sender<CallbackResult>, timeout: Duration) {
         thread::spawn(move || {
             let start_time = std::time::Instant::now();
@@ -897,6 +995,10 @@ impl NativeAuthClient {
         });
     }
 
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
     async fn login_task<T: AsRef<str>>(
         &self,
         ii_url: T,
@@ -1047,7 +1149,11 @@ fn find_pem_file_in_directory(directory: &Path) -> Result<Option<PathBuf>, AuthC
     Ok(None)
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    feature = "native",
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 mod tests {
     use super::*;
     use serde_json::json;

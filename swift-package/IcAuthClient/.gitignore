@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+IcAuthClientFFI.xcframework/
+Package.resolved

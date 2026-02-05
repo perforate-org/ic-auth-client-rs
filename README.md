@@ -92,7 +92,7 @@ let auth_client = AuthClient::new("your-app")?;
 2. That browser page must run a small bridge script that completes II auth and posts the result back to the native callback URL.
 3. The native app receives the payload and finishes the login.
 
-For step 2, use [`@perforate/ic-auth-bridge`](https://www.npmjs.com/package/@perforate/ic-auth-bridge) or start from the packaged template in [`ii-integration/`](https://github.com/perforate-org/ic-auth-client-rs/) (or see the [Bevy](https://bevy.org/) example at [`examples/bevy/`](https://github.com/perforate-org/ic-auth-client-rs/) and copy it into your app or canister frontend. The template already wires the bridge, so you only need to host it and point `NativeAuthClient::login` at it.
+For step 2, use [`@perforate/ic-auth-bridge`](https://www.npmjs.com/package/@perforate/ic-auth-bridge) or start from the packaged template in [`ii-bridge/`](https://github.com/perforate-org/ic-auth-client-rs/) (or see the [Bevy](https://bevy.org/) example at [`examples/bevy/`](https://github.com/perforate-org/ic-auth-client-rs/) and copy it into your app or canister frontend. The template already wires the bridge, so you only need to host it and point `NativeAuthClient::login` at it.
 
 ## License
 

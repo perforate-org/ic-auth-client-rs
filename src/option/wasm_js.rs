@@ -4,7 +4,7 @@ use crate::{
     ArcIdentity, IdleOptions, key::BaseKeyType, storage::async_storage::AuthClientStorage,
 };
 
-/// Options for creating a new [`AuthClient`].
+/// Options for creating a new [`AuthClient`](crate::AuthClient).
 #[derive(Default, bon::Builder)]
 pub struct AuthClientCreateOptions {
     /// An optional identity to use as the base. If not provided, an `Ed25519` key pair will be used.

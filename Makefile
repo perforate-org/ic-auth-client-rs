@@ -29,7 +29,10 @@ test-safari:
 	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack test --safari
 
 doc:
-	RUSTDOCFLAGS='--cfg docsrs' cargo +nightly doc --all-features --no-deps --open
+	RUSTDOCFLAGS='--cfg docsrs' cargo +nightly doc --features keyring,pem,native,tracing,wasm-js --no-deps --open
+
+build-swift:
+	./swift-package/IcAuthClient/build_all.sh
 
 clean:
 	rm -rf target

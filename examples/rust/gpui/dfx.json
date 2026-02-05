@@ -1,0 +1,37 @@
+{
+  "canisters": {
+    "backend": {
+      "candid": ".candid/backend.did",
+      "package": "backend",
+      "type": "rust"
+    },
+    "ii-bridge": {
+      "type": "assets",
+      "frontend": {
+        "entrypoint": "ii-bridge/dist/index.html"
+      },
+      "source": ["ii-bridge/dist"],
+      "build": ["cd ii-bridge && npm run build"]
+    },
+    "internet_identity": {
+      "candid": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity.did",
+      "type": "custom",
+      "init_arg": "(opt record { new_flow_origins = opt vec { \"http://rdmx6-jaaaa-aaaaa-aaadq-cai.localhost:4943\" } })",
+      "specified_id": "rdmx6-jaaaa-aaaaa-aaadq-cai",
+      "remote": {
+        "id": {
+          "ic": "rdmx6-jaaaa-aaaaa-aaadq-cai"
+        }
+      },
+      "wasm": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity_dev.wasm.gz"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

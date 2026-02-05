@@ -1,0 +1,48 @@
+[package]
+publish = false
+name = "frontend"
+version = "0.0.1"
+edition = "2024"
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
+
+[profile.release]
+lto = true
+opt-level = "z"
+codegen-units = 1
+strip = true
+target = "wasm32-unknown-unknown"
+panic = "abort"
+
+[dependencies]
+console_error_panic_hook = "0.1.7"
+dioxus = { version = "0.7.3", features = ["web"] }
+futures-channel = "0.3"
+futures-util = "0.3"
+ic-agent = "0.45"
+ic-auth-client = { path = "../../../../../", features = ["tracing"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "Navigator",
+    "Window",
+    "console",
+] }
+
+candid.workspace = true
+domain = { workspace = true, features = ["dto", "value-object"] }
+serde.workspace = true
+util.workspace = true

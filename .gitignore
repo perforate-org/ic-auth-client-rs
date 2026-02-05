@@ -9,6 +9,17 @@ pkg/
 
 # JavaScript
 node_modules/
+ii-bridge/package-lock.json
+package-lock.json
+
+# Swift
+Package.resolved
+.build
+.swiftpm
+examples/swift/**/*.xcodeproj/
+
+# UniFFI
+uniffi/generated/
 
 # Various IDEs and Editors
 .vscode/
