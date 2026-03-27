@@ -38,7 +38,7 @@ tracing = { version = "0.1", optional = true }
 
 # `wasm-js` feature
 getrandom = { version = "0.3", optional = true }
-gloo-events = { version = "0.2", optional = true }
+gloo-events = { version = "0.3", optional = true }
 gloo-timers = { version = "0.3", optional = true, features = ["futures"] }
 gloo-utils = { version = "0.2", optional = true }
 idb = { version = "0.6", optional = true }
