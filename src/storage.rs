@@ -6,33 +6,12 @@
 use base64::prelude::{BASE64_STANDARD_NO_PAD, Engine as _};
 use thiserror::Error;
 
-#[cfg(feature = "wasm-js")]
-pub mod async_storage;
-#[cfg(feature = "wasm-js")]
 pub mod js_compat;
 #[cfg(feature = "native")]
 pub mod sync_storage;
 
-/// A key for storing the identity key pair.
+/// The key the PEM store keeps its identity material under.
 pub const KEY_STORAGE_KEY: &str = "identity";
-/// A key for storing the delegation chain.
-pub const KEY_STORAGE_DELEGATION: &str = "delegation";
-#[cfg(feature = "wasm-js")]
-pub(crate) const KEY_VECTOR: &str = "iv";
-/// A key for storing the base key type.
-pub const KEY_STORAGE_KEY_TYPE: &str = "key-type";
-
-/// Storage keys used by the AuthClient.
-pub mod storage_keys {
-    use super::{KEY_STORAGE_DELEGATION, KEY_STORAGE_KEY, KEY_STORAGE_KEY_TYPE};
-
-    /// Stored identity key material.
-    pub const IDENTITY_KEY: &str = KEY_STORAGE_KEY;
-    /// Stored delegation chain.
-    pub const DELEGATION_KEY: &str = KEY_STORAGE_DELEGATION;
-    /// Stored base key type.
-    pub const KEY_TYPE_KEY: &str = KEY_STORAGE_KEY_TYPE;
-}
 
 /// Enum for storing different types of keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,9 +20,6 @@ pub enum StoredKey {
     String(String),
     /// Raw key data.
     Raw(Vec<u8>),
-    /// A WebCrypto key pair (IndexedDB only).
-    #[cfg(feature = "wasm-js")]
-    CryptoKeyPair(web_sys::CryptoKeyPair),
 }
 
 impl StoredKey {
@@ -63,10 +39,6 @@ impl StoredKey {
                 Ok(bytes)
             }
             StoredKey::Raw(bytes) => Ok(bytes.clone()),
-            #[cfg(feature = "wasm-js")]
-            StoredKey::CryptoKeyPair(_) => Err(DecodeError::Key(
-                "CryptoKeyPair cannot be decoded to raw bytes".to_string(),
-            )),
         }
     }
 
@@ -89,8 +61,6 @@ impl StoredKey {
         match self {
             StoredKey::String(s) => s.clone(),
             StoredKey::Raw(bytes) => BASE64_STANDARD_NO_PAD.encode(bytes),
-            #[cfg(feature = "wasm-js")]
-            StoredKey::CryptoKeyPair(_) => String::new(),
         }
     }
 }
@@ -185,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_stored_key_encode_decode() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let signing_key = SigningKey::generate(&mut rng);
         let raw_key = signing_key.to_bytes();
 

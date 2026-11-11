@@ -19,8 +19,10 @@ for this Internet Identity example.
    dfx start --background
    dfx deploy
    ```
-2. Build the Internet Identity bridge assets (only needed when they
-   change):
+2. **Obsolete for the current crate**: this example still uses the pre-v11
+   bridge flow and its local `ii-bridge/` copy; the v11 client needs no bridge.
+   See [examples/README.md](../../README.md). If you are running the old flow,
+   build the bridge assets (only needed when they change):
    ```bash
    npm install
    ```

@@ -6,8 +6,9 @@ by the Internet Computer.
 ## Requirements
 
 - Rust toolchain
-- `dfx` running locally for the backend/II bridge canisters
-- Node.js (needed to build `ii-bridge`)
+- `dfx` running locally for the backend canisters
+- Node.js: only for the pre-v11 bridge flow this example still uses; the v11
+  client needs no bridge (see [examples/README.md](../../README.md))
 
 ## Running Locally
 
@@ -16,7 +17,9 @@ by the Internet Computer.
    dfx start --background
    dfx deploy
    ```
-2. Build the Internet Identity bridge assets (only needed when they change):
+2. **Obsolete for the current crate**: this example still uses the pre-v11
+   bridge flow and its local `ii-bridge/` copy, which the v11 client does not
+   need. If you are running the old flow, build the bridge assets:
    ```bash
    npm --prefix ../../ii-bridge install
    npm --prefix ../../ii-bridge run build

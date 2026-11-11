@@ -7,6 +7,7 @@
 //!
 //! - `keyring` --- Enable secure store relying on platform for `native` feature
 //! - `pem` --- Enable PEM support for `native` feature
+//! - `android-password` --- Enable password-encrypted file storage for Android/Kotlin native usage
 //! - `native` --- Enable native platform support (needs one of `keyring` or `pem` feature)
 //! - `tracing` --- Enable logging with [tracing](https://crates.io/crates/tracing)
 //! - `wasm-js` *(enabled by default)* --- Enable WebView support
@@ -18,22 +19,31 @@ compile_error!("Either feature \"native\" or \"wasm-js\" must be enabled for thi
 #[macro_use]
 extern crate tracing;
 
-pub mod api;
-mod auth_client;
-pub mod idle_manager;
+pub mod client;
 pub mod key;
-pub mod option;
+pub mod signer;
 pub mod storage;
 mod util;
 
-pub use auth_client::*;
-pub use idle_manager::IdleManagerOptions;
+pub use client::{
+    AuthClient, AuthClientCreateOptions, AuthClientError, AuthClientErrorKind, ClientIdentity,
+    Credential, CredentialStorage, IdentityProvider, MemoryCredentialStorage, MemoryStateStorage,
+    NotificationConsentStatus, OpenIdProvider, Prompt, SessionState, SessionStatus, SignInOptions,
+    SignOutOptions, SignedAttributes, Slots, SsoStatus, StoredSessionState, Subscription,
+    TransportMode,
+};
 #[cfg(feature = "native")]
-pub use option::native::NativeAuthClientCreateOptions;
+pub use client::{credentials::NativeCredentialStorage, state::NativeStateStorage};
+pub use client::{
+    credentials::SharedCredentialStorage, state::SharedStateStorage, transport::SharedTransport,
+};
 #[cfg(feature = "wasm-js")]
-pub use option::wasm_js::AuthClientCreateOptions;
-pub use option::{AuthClientLoginOptions, IdleOptions};
-pub use util::{arc_identity::ArcIdentity, callback, delegation_chain};
+pub use client::{
+    credentials::{IdbCredentialStorage, LocalCredentialStorage, SharedMemoryCredentialStorage},
+    state::{CookieStateStorage, LocalStateStorage},
+    transport::{PostMessageTransport, UrlTransport},
+};
+pub use util::{arc_identity::ArcIdentity, delegation_chain};
 
 #[cfg(feature = "uniffi")]
 mod uniffi_bindings;
