@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+#[cfg(feature = "native")]
 use ic_agent::export::Principal;
 use ic_agent::identity::{Delegation, SignedDelegation};
 use parking_lot::Mutex;
@@ -59,6 +60,7 @@ impl FakeClock {
     }
 
     /// Sets the clock.
+    #[cfg(feature = "native")]
     pub fn set(&self, now_ms: u64) {
         self.now_ms.store(now_ms, Ordering::SeqCst);
     }
@@ -259,6 +261,7 @@ impl FakeScheduler {
 }
 
 /// The self-authenticating principal of a DER-encoded key.
+#[cfg(feature = "native")]
 pub fn account_principal(key_der: &[u8]) -> Principal {
     Principal::self_authenticating(key_der)
 }

@@ -69,6 +69,11 @@ jobs:
       - name: wasm32 check (compat harness)
         run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js,wasm-compat-test
 
+      # wasm-pack builds the test harness for wasm32; a test module that uses an
+      # import only a native build has fails here, before any browser starts.
+      - name: wasm32 test harness
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --tests --target wasm32-unknown-unknown
+
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 

@@ -654,11 +654,16 @@ pub fn default_lock_manager() -> Arc<dyn LockManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native")]
     use crate::client::credentials::generate_identity;
-
+    #[cfg(feature = "native")]
     use crate::delegation_chain::DelegationChain;
+    #[cfg(feature = "native")]
     use crate::key::BaseKeyType;
 
+    // Only the in-process manager's tests use these; the browser one has no
+    // tests here, so a wasm test build would otherwise see them as dead.
+    #[cfg(feature = "native")]
     fn held() -> Held {
         Held {
             identity: generate_identity(BaseKeyType::Ed25519).expect("a key"),
@@ -666,6 +671,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native")]
     fn ok_work() -> MintWork {
         Box::new(|_stolen| Box::pin(async { Ok(held()) }))
     }

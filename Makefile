@@ -7,6 +7,12 @@ build-wasm-compat:
 check-wasm:
 	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js
 
+# The unit tests are compiled for wasm32 too (wasm-pack builds the harness), so
+# a cfg'd-out import in a test module breaks the browser test job before any
+# browser runs. Building the harness here is the cheap local equivalent.
+check-wasm-tests:
+	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --tests --target wasm32-unknown-unknown
+
 check-native-keyring:
 	cargo check --no-default-features --features native,keyring
 

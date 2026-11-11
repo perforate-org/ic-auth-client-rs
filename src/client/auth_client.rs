@@ -1772,8 +1772,14 @@ fn default_transport(_settings: &Settings) -> Option<SharedTransport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Imported here rather than taken from the parent's cfg'd imports: on a
+    // wasm32 test build the parent compiles neither `native` branch, and these
+    // tests are compiled for that target too (they only run where a runner
+    // exists, but they have to build).
     use crate::client::credentials::MemoryCredentialStorage;
     use crate::client::state::{MemoryStateStorage, StateStorage, StoredSessionState};
+    use crate::key::BaseKeyType;
+    #[allow(unused_imports)]
     use ic_agent::identity::Identity as _;
 
     fn account() -> Principal {
