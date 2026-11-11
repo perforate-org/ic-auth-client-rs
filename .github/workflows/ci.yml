@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  compat:
+    name: ic-agent pairing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fetch
+      - run: ./scripts/check-agent-compat.sh
+
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: native, keyring (tests)
+        run: cargo test --no-default-features --features native,keyring -- --test-threads=1
+
+      - name: native, pem (tests)
+        run: cargo test --no-default-features --features native,pem -- --test-threads=1
+
+      - name: Android password storage
+        run: cargo check --no-default-features --features native,keyring,android-password
+
+      - name: UniFFI Swift
+        run: cargo check --no-default-features --features native,keyring,swift
+
+      - name: UniFFI Kotlin
+        run: cargo check --no-default-features --features native,keyring,kotlin
+
+      - name: UniFFI with PEM
+        run: cargo check --no-default-features --features native,pem,uniffi
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: wasm32 check
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js
+
+      - name: wasm32 check (compat harness)
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js,wasm-compat-test
+
+      # wasm-pack builds the test harness for wasm32; a test module that uses an
+      # import only a native build has fails here, before any browser starts.
+      - name: wasm32 test harness
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo build --tests --target wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Browser tests (Chrome)
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack test --headless --chrome
+
+      - name: Browser tests (Firefox)
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack test --headless --firefox
+
+  msrv:
+    name: MSRV (1.95.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: cargo check --no-default-features --features native,keyring

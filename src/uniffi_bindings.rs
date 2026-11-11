@@ -1,15 +1,25 @@
-//! UniFFI bindings for the native auth client.
+//! UniFFI bindings for the native client (Swift and Kotlin consumers).
+//!
+//! The exported surface is the v11 client, blocking: a foreign caller cannot
+//! await a Rust future, so every asynchronous operation is driven to completion
+//! with `futures::executor::block_on` on the calling thread.
+//!
+//! Sign-in uses the identity provider's non-browser flow
+//! ([`crate::client::webauth`]): the system browser opens, the provider hands the
+//! delegation to a loopback listener, and this call returns once it has landed.
+//! That is a desktop flow (macOS, Linux, Windows); on iOS and Android it returns
+//! [`AuthError::Unsupported`] until a platform-hosted equivalent lands, because
+//! the provider only accepts a `127.0.0.1` HTTP callback.
 
-use crate::{AuthClientLoginOptions, NativeAuthClient};
-#[cfg(feature = "keyring")]
-use crate::{
-    NativeAuthClientCreateOptions, key::BaseKeyType, storage::sync_storage::KeyringStorage,
-};
+use std::sync::Arc;
+
+use futures::executor::block_on;
 use ic_agent::identity::Identity;
-use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
-use serde_json::Map;
-use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
+
+use crate::client::{
+    AuthClient as Client, AuthClientCreateOptions, AuthClientError, ClientIdentity, SessionStatus,
+    SignInOptions, SignOutOptions,
+};
 
 #[cfg(feature = "keyring")]
 #[uniffi::export]
@@ -17,298 +27,370 @@ use std::{sync::Arc, time::Duration};
 ///
 /// Call this before creating an `AuthClient` to avoid touching the OS keyring.
 pub fn enable_keyring_mock() {
-    keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    // `keyring` 4 initialises its platform store lazily on the first `Entry::new`
+    // call and installs it as the `keyring-core` default store. Force that
+    // initialisation first, then replace the default store with the in-memory
+    // mock so entries created afterwards stay off the real OS keychain.
+    let _ = keyring::Entry::store_status();
+    keyring_core::set_default_store(
+        keyring_core::mock::Store::new().expect("failed to create mock credential store"),
+    );
 }
 
-#[derive(uniffi::Record, Clone, Default)]
-/// Options for building login URLs and starting login flows.
-pub struct LoginOptions {
-    /// Custom identity provider URL (defaults to Internet Identity if `None`).
-    pub identity_provider: Option<String>,
-    /// Maximum session TTL in nanoseconds.
-    pub max_time_to_live: Option<u64>,
-    /// Allow PIN-based authentication when supported.
-    pub allow_pin_authentication: Option<bool>,
-    /// Derivation origin to use for the session.
-    pub derivation_origin: Option<String>,
-    /// Browser window features (desktop only).
-    pub window_opener_features: Option<String>,
-    /// Request timeout in milliseconds.
-    pub timeout_millis: Option<u64>,
-    /// Custom values JSON to pass through to the identity provider.
-    pub custom_values_json: Option<String>,
-}
-
-#[derive(uniffi::Enum, Debug, Clone)]
 /// Errors exposed by the UniFFI bindings.
+#[derive(Debug, Clone, uniffi::Error, thiserror::Error)]
 pub enum AuthError {
-    /// A generic error message.
+    /// The options handed to a call are not usable.
+    #[error("invalid options: {0}")]
+    InvalidOptions(String),
+    /// A storage medium failed.
+    #[error("storage error: {0}")]
+    Storage(String),
+    /// The signer (identity provider) failed or refused.
+    #[error("signer error: {0}")]
+    Signer(String),
+    /// An agent or canister call failed.
+    #[error("agent error: {0}")]
+    Agent(String),
+    /// A sign-in exists for this domain, but this client holds no credential.
+    #[error("session not held")]
+    SessionNotHeld,
+    /// The session behind the identity no longer exists.
+    #[error("session gone")]
+    SessionGone,
+    /// A later sign-in or sign-out took over from this one.
+    #[error("superseded: {0}")]
+    Superseded(String),
+    /// The platform cannot do what was asked.
+    #[error("unsupported on this platform: {0}")]
+    Unsupported(String),
+    /// Anything else.
+    #[error("{0}")]
     Message(String),
-    /// Invalid JSON in `custom_values_json`.
-    InvalidCustomValues(String),
-    /// Failed to derive or serialize a principal.
-    Principal(String),
-    /// Signature creation failed.
-    Signature(String),
-    /// Key retrieval or parsing failed.
-    Key(String),
 }
 
-impl std::fmt::Display for AuthError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AuthError::Message(message) => write!(f, "{}", message),
-            AuthError::InvalidCustomValues(message) => write!(f, "{}", message),
-            AuthError::Principal(message) => write!(f, "{}", message),
-            AuthError::Signature(message) => write!(f, "{}", message),
-            AuthError::Key(message) => write!(f, "{}", message),
+impl From<AuthClientError> for AuthError {
+    fn from(error: AuthClientError) -> Self {
+        match error {
+            AuthClientError::InvalidOptions(message) => AuthError::InvalidOptions(message),
+            AuthClientError::Storage(message) => AuthError::Storage(message),
+            AuthClientError::Signer(error) => AuthError::Signer(error.to_string()),
+            AuthClientError::Agent(message) => AuthError::Agent(message),
+            AuthClientError::SessionNotHeld => AuthError::SessionNotHeld,
+            AuthClientError::SessionGone => AuthError::SessionGone,
+            AuthClientError::Superseded(message) => AuthError::Superseded(message),
+            AuthClientError::Unsupported(reason) => AuthError::Unsupported(reason.to_string()),
+            other => AuthError::Message(other.to_string()),
         }
     }
 }
 
+/// Options for [`AuthClient::login`].
+#[derive(uniffi::Record, Clone, Default)]
+pub struct LoginOptions {
+    /// The identity provider's authorize URL (defaults to `https://id.ai/authorize`).
+    pub identity_provider: Option<String>,
+    /// The canister that mints and revokes this application's delegations.
+    pub canister_id: Option<String>,
+    /// The origin of the application whose principal to sign in as.
+    ///
+    /// This is the provider's `domain` parameter: signing in "as an app" makes
+    /// the principal match the one the same user has in that app's web UI.
+    /// Requires the user to have enabled CLI access for their identity, and
+    /// omitting it signs in as the provider's generic CLI identity instead.
+    pub derivation_origin: Option<String>,
+    /// Maximum session lifetime in nanoseconds (sent as the provider's `ttl`).
+    pub max_time_to_live: Option<u64>,
+    /// Maximum idle time in nanoseconds. No equivalent in the non-browser flow.
+    pub max_time_to_idle: Option<u64>,
+}
+
+/// The client's answer about its sign-in, as a plain record.
+#[derive(uniffi::Record, Clone, Default)]
+pub struct SessionStatusRecord {
+    /// One of `signed-in`, `signed-in-elsewhere`, `expired`, `signed-out`.
+    pub state: String,
+    /// The account's principal, where the status names one.
+    pub principal: Option<String>,
+    /// When the sign-in ends (or ended), in milliseconds since the Unix epoch.
+    pub expires_at_ms: Option<u64>,
+}
+
+impl From<SessionStatus> for SessionStatusRecord {
+    fn from(status: SessionStatus) -> Self {
+        Self {
+            state: status.state().to_string(),
+            principal: status.principal().map(|principal| principal.to_text()),
+            expires_at_ms: status.expires_at_ms(),
+        }
+    }
+}
+
+/// A native authentication client.
 #[derive(uniffi::Object)]
-/// High-level authentication client for native platforms.
 pub struct AuthClient {
-    inner: NativeAuthClient,
+    inner: Client,
+}
+
+impl AuthClient {
+    fn from_parts(
+        credential_storage: crate::client::credentials::SharedCredentialStorage,
+        state_directory: Option<String>,
+    ) -> Result<Arc<Self>, AuthError> {
+        let state_storage: crate::client::state::SharedStateStorage = match state_directory {
+            Some(directory) => Arc::new(
+                crate::client::state::native::NativeStateStorage::new(directory)
+                    .map_err(AuthError::from)?,
+            ),
+            None => Arc::new(crate::client::state::MemoryStateStorage::new()),
+        };
+        let options = AuthClientCreateOptions {
+            credential_storage: Some(credential_storage),
+            state_storage: Some(state_storage),
+            ..Default::default()
+        };
+        let inner = Client::new(options).map_err(AuthError::from)?;
+        Ok(Arc::new(Self { inner }))
+    }
+}
+
+#[cfg(feature = "keyring")]
+#[uniffi::export]
+impl AuthClient {
+    /// Creates a client whose credentials live in the OS keyring.
+    ///
+    /// `state_directory` is where the sign-in state is kept, so that a restart
+    /// still knows who is signed in. Omitting it keeps the state in memory.
+    #[uniffi::constructor]
+    pub fn new(
+        service_name: String,
+        state_directory: Option<String>,
+    ) -> Result<Arc<Self>, AuthError> {
+        Self::from_parts(
+            Arc::new(
+                crate::client::credentials::native::NativeCredentialStorage::keyring(service_name),
+            ),
+            state_directory,
+        )
+    }
+}
+
+#[cfg(feature = "android-password")]
+#[uniffi::export]
+impl AuthClient {
+    /// Creates a client whose credentials live in a password-encrypted file.
+    ///
+    /// For Android/Kotlin consumers where the OS keyring is unavailable, or
+    /// where a password-protected file is preferred.
+    #[uniffi::constructor(name = "newWithPassword")]
+    pub fn new_with_password(
+        service_name: String,
+        storage_directory: String,
+        password: String,
+        state_directory: Option<String>,
+    ) -> Result<Arc<Self>, AuthError> {
+        Self::from_parts(
+            Arc::new(
+                crate::client::credentials::native::NativeCredentialStorage::password(
+                    service_name,
+                    storage_directory,
+                    password,
+                ),
+            ),
+            state_directory,
+        )
+    }
+}
+
+#[cfg(feature = "pem")]
+#[uniffi::export]
+impl AuthClient {
+    /// Creates a client whose credentials live in a PEM file.
+    #[uniffi::constructor(name = "newWithPem")]
+    pub fn new_with_pem(
+        directory: String,
+        state_directory: Option<String>,
+    ) -> Result<Arc<Self>, AuthError> {
+        Self::from_parts(
+            Arc::new(crate::client::credentials::native::NativeCredentialStorage::pem(directory)),
+            state_directory,
+        )
+    }
 }
 
 #[uniffi::export]
 impl AuthClient {
-    #[uniffi::constructor]
-    /// Create a new client using the provided service name.
-    pub fn new(service_name: String) -> Result<Arc<Self>, AuthError> {
-        #[cfg(feature = "keyring")]
+    /// Signs in, blocking until the browser flow completes.
+    ///
+    /// Desktop only: the identity provider's non-browser flow hands the
+    /// delegation to a `127.0.0.1` listener, which a mobile app cannot complete
+    /// without a platform-hosted equivalent.
+    pub fn login(&self, options: LoginOptions) -> Result<Arc<AuthIdentity>, AuthError> {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
         {
-            #[cfg(feature = "swift")]
-            let options = NativeAuthClientCreateOptions::builder()
-                .storage(KeyringStorage::new(service_name))
-                .key_type(BaseKeyType::Secp256k1)
-                .build();
-            #[cfg(not(feature = "swift"))]
-            let options = NativeAuthClientCreateOptions::builder()
-                .storage(KeyringStorage::new(service_name))
-                .build();
-            NativeAuthClient::new_with_options(options)
-                .map(|inner| Arc::new(AuthClient { inner }))
-                .map_err(|e| AuthError::Message(e.to_string()))
+            let identity = self.build_options(options).and_then(|options| {
+                block_on(self.inner.sign_in(options)).map_err(AuthError::from)
+            })?;
+            Ok(Arc::new(AuthIdentity::from_identity(identity)))
         }
-        #[cfg(not(feature = "keyring"))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         {
-            NativeAuthClient::new(service_name)
-                .map(|inner| Arc::new(AuthClient { inner }))
-                .map_err(|e| AuthError::Message(e.to_string()))
+            let _ = options;
+            Err(AuthError::Unsupported(
+                "sign-in from a mobile app needs a platform-hosted equivalent of the \
+                 provider's non-browser flow, which is not implemented yet"
+                    .to_string(),
+            ))
         }
     }
 
-    pub fn build_login_url(
-        &self,
-        auth_bridge_url: String,
-        redirect_uri: String,
-        options: LoginOptions,
-    ) -> Result<String, AuthError> {
-        let mut opts = AuthClientLoginOptions {
-            identity_provider: options.identity_provider,
-            max_time_to_live: options.max_time_to_live,
-            allow_pin_authentication: options.allow_pin_authentication,
-            derivation_origin: options.derivation_origin,
-            window_opener_features: options.window_opener_features,
-            timeout: options.timeout_millis.map(Duration::from_millis),
-            ..Default::default()
-        };
-
-        if let Some(custom_json) = options.custom_values_json {
-            let map: Map<String, serde_json::Value> = serde_json::from_str(&custom_json)
-                .map_err(|e| AuthError::InvalidCustomValues(e.to_string()))?;
-            opts.custom_values = Some(map);
-        }
-
-        self.inner
-            .build_login_url(auth_bridge_url, &redirect_uri, opts)
-            .map_err(|e| AuthError::Message(e.to_string()))
+    /// Signs out, ending the session at the identity provider where possible.
+    pub fn logout(&self) -> Result<(), AuthError> {
+        block_on(self.inner.sign_out(SignOutOptions::default())).map_err(AuthError::from)
     }
 
-    pub fn finish_login_from_payload(&self, payload: String) -> Result<(), AuthError> {
-        self.inner
-            .finish_login_from_payload(&payload)
-            .map_err(|e| AuthError::Message(e.to_string()))
-    }
-
+    /// Whether this client is signed in.
     pub fn is_authenticated(&self) -> bool {
         self.inner.is_authenticated()
     }
 
-    /// Return the authenticated principal as a text string.
-    pub fn principal_text(&self) -> Result<String, AuthError> {
+    /// The signed-in account's principal, where there is one.
+    pub fn principal_text(&self) -> Option<String> {
         self.inner
-            .principal()
+            .get_principal()
             .map(|principal| principal.to_text())
-            .map_err(AuthError::Principal)
     }
 
-    /// Return the base key type used by the client, if known.
-    pub fn base_key_type(&self) -> Option<String> {
-        self.inner.base_key_type().map(|k| k.to_string())
+    /// The client's answer about its sign-in.
+    pub fn status(&self) -> SessionStatusRecord {
+        self.inner.get_status().into()
     }
 
-    /// Return the uncompressed secp256k1 public key for the current identity.
-    pub fn secp256k1_uncompressed_public_key(&self) -> Result<Vec<u8>, AuthError> {
-        self.inner
-            .secp256k1_uncompressed_public_key()
-            .map_err(AuthError::Key)
-    }
-
-    /// Return the secp256k1 private key for the current identity.
-    pub fn secp256k1_private_key(&self) -> Result<Vec<u8>, AuthError> {
-        self.inner.secp256k1_private_key().map_err(AuthError::Key)
-    }
-
-    /// Return the delegation chain as JSON, if present.
-    pub fn delegation_chain_json(&self) -> Option<String> {
-        self.inner.delegation_chain_json()
-    }
-
-    /// Sign an Internet Computer request using the current identity.
-    pub fn sign_ic_request(&self, message: Vec<u8>, domain: String) -> Result<Vec<u8>, AuthError> {
-        let private_key = self.inner.secp256k1_private_key().map_err(AuthError::Key)?;
-        sign_ic_request_with_key(&private_key, &message, &domain).map_err(AuthError::Signature)
-    }
-
-    /// Return the underlying identity for direct cryptographic operations.
-    pub fn identity(&self) -> Arc<AuthIdentity> {
-        Arc::new(AuthIdentity {
-            inner: self.inner.identity(),
-        })
-    }
-
-    /// Clear any stored credentials.
-    pub fn logout(&self) {
-        self.inner.logout();
-    }
-}
-
-fn sign_ic_request_with_key(
-    private_key: &[u8],
-    message: &[u8],
-    domain: &str,
-) -> Result<Vec<u8>, String> {
-    let hash = sha256(domain_separated_data(domain, message));
-    let key_bytes: [u8; 32] = private_key
-        .try_into()
-        .map_err(|_| "secp256k1 private key must be 32 bytes".to_string())?;
-    let signing_key = SigningKey::from_bytes(&key_bytes.into())
-        .map_err(|e| format!("invalid secp256k1 key: {e}"))?;
-    let signature: Signature = signing_key
-        .sign_prehash(&hash)
-        .map_err(|e| format!("signing failed: {e}"))?;
-    let signature = signature.normalize_s().unwrap_or(signature);
-    Ok(signature.to_bytes().to_vec())
-}
-
-fn domain_separated_data(domain: &str, message: &[u8]) -> Vec<u8> {
-    let mut out = leb128_encode_u64(domain.len() as u64);
-    out.extend_from_slice(domain.as_bytes());
-    out.extend_from_slice(message);
-    out
-}
-
-fn sha256(data: Vec<u8>) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(&data);
-    hasher.finalize().into()
-}
-
-fn leb128_encode_u64(mut value: u64) -> Vec<u8> {
-    let mut out = Vec::new();
-    loop {
-        let mut byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value != 0 {
-            byte |= 0x80;
-        }
-        out.push(byte);
-        if value == 0 {
-            break;
-        }
-    }
-    out
-}
-
-#[uniffi::export]
-impl AuthClient {
-    /// Start a desktop login flow using a local callback server.
+    /// The identity requests are signed with.
     ///
-    /// This is only supported on macOS, Linux, and Windows.
-    pub fn login(&self, auth_bridge_url: String, options: LoginOptions) -> Result<(), AuthError> {
-        let mut opts = AuthClientLoginOptions {
-            identity_provider: options.identity_provider,
-            max_time_to_live: options.max_time_to_live,
-            allow_pin_authentication: options.allow_pin_authentication,
-            derivation_origin: options.derivation_origin,
-            window_opener_features: options.window_opener_features,
-            timeout: options.timeout_millis.map(Duration::from_millis),
-            ..Default::default()
-        };
-
-        if let Some(custom_json) = options.custom_values_json {
-            let map: Map<String, serde_json::Value> = serde_json::from_str(&custom_json)
-                .map_err(|e| AuthError::InvalidCustomValues(e.to_string()))?;
-            opts.custom_values = Some(map);
-        }
-
-        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-        {
-            self.inner.login(auth_bridge_url, opts);
-            Ok(())
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            Err(AuthError::Message(
-                "login is only supported on desktop targets; use AuthSession on iOS".to_string(),
-            ))
-        }
+    /// In a browser this is the session identity, whose delegation the client
+    /// replaces as it ages; this handle is a snapshot of it, so a long-lived
+    /// foreign object should ask again rather than cache it.
+    pub fn identity(&self) -> Result<Arc<AuthIdentity>, AuthError> {
+        let identity = block_on(self.inner.get_identity()).map_err(AuthError::from)?;
+        Ok(Arc::new(AuthIdentity::from_identity(identity)))
     }
 }
 
+impl AuthClient {
+    fn build_options(&self, options: LoginOptions) -> Result<SignInOptions, AuthError> {
+        // The provider pair is applied through the create options; a caller that
+        // changes it here would be changing a client-level setting per call, so
+        // this validates that nothing was asked for that is not supported.
+        if options.identity_provider.is_some() || options.canister_id.is_some() {
+            return Err(AuthError::InvalidOptions(
+                "identity_provider and canister_id are create-time settings; pass them to the \
+                 client constructor instead"
+                    .to_string(),
+            ));
+        }
+        let _ = options.max_time_to_idle;
+        Ok(SignInOptions::builder()
+            .maybe_max_time_to_live(options.max_time_to_live)
+            .build())
+    }
+}
+
+/// A concrete identity, suitable for signing requests.
 #[derive(uniffi::Object)]
-/// A concrete identity instance associated with an `AuthClient`.
 pub struct AuthIdentity {
-    inner: Arc<dyn Identity>,
+    identity: ClientIdentity,
+}
+
+impl AuthIdentity {
+    fn from_identity(identity: ClientIdentity) -> Self {
+        Self { identity }
+    }
 }
 
 #[uniffi::export]
 impl AuthIdentity {
-    /// Return the identity principal as text.
+    /// The principal this identity signs as.
     pub fn principal_text(&self) -> Result<String, AuthError> {
-        self.inner
+        self.identity
             .sender()
             .map(|principal| principal.to_text())
-            .map_err(AuthError::Principal)
+            .map_err(AuthError::Message)
     }
 
-    /// Return the DER-encoded public key for the identity, if available.
+    /// The DER-encoded public key this identity presents.
     pub fn public_key_der(&self) -> Option<Vec<u8>> {
-        self.inner.public_key()
+        self.identity.public_key()
     }
 
-    /// Sign an arbitrary message with the identity.
+    /// Signs `message` with this identity.
     pub fn sign_arbitrary(&self, message: Vec<u8>) -> Result<Vec<u8>, AuthError> {
         let signature = self
-            .inner
+            .identity
             .sign_arbitrary(&message)
-            .map_err(AuthError::Signature)?;
+            .map_err(AuthError::Message)?;
         signature
             .signature
-            .ok_or_else(|| AuthError::Signature("Signature missing".to_string()))
+            .ok_or_else(|| AuthError::Message("signature missing".to_string()))
     }
 
-    /// Return the delegation chain as JSON, if present.
+    /// When the delegation this identity signs with expires, in milliseconds
+    /// since the Unix epoch.
+    ///
+    /// A browser identity's delegation is replaced as it ages, so this is a
+    /// snapshot: a foreign object that holds the identity for a long time should
+    /// ask the client for it again rather than trust an old answer.
+    pub fn delegation_expires_at_ms(&self) -> Option<u64> {
+        self.identity.delegation_expires_at_ms()
+    }
+
+    /// The delegation chain this identity presents, as JSON.
     pub fn delegation_chain_json(&self) -> Option<String> {
-        let delegations = self.inner.delegation_chain();
+        let delegations = self.identity.delegation_chain();
         if delegations.is_empty() {
             return None;
         }
-        let public_key = self.inner.public_key().unwrap_or_default();
-        let chain = crate::util::delegation_chain::DelegationChain::new(delegations, public_key);
-        Some(chain.to_json())
+        let public_key = self.identity.public_key().unwrap_or_default();
+        let chain = crate::delegation_chain::DelegationChain::new(delegations, public_key);
+        Some(chain.to_js_json())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_records_say_what_the_client_says() {
+        let record: SessionStatusRecord = SessionStatus::SignedOut.into();
+        assert_eq!(record.state, "signed-out");
+        assert_eq!(record.principal, None);
+        assert_eq!(record.expires_at_ms, None);
+
+        let principal = ic_agent::export::Principal::self_authenticating([1u8; 29]);
+        let record: SessionStatusRecord = SessionStatus::SignedIn {
+            principal,
+            expires_at_ms: 42,
+        }
+        .into();
+        assert_eq!(record.state, "signed-in");
+        assert_eq!(record.principal, Some(principal.to_text()));
+        assert_eq!(record.expires_at_ms, Some(42));
+    }
+
+    #[test]
+    fn client_errors_map_onto_the_exported_enum() {
+        assert!(matches!(
+            AuthError::from(AuthClientError::SessionNotHeld),
+            AuthError::SessionNotHeld
+        ));
+        assert!(matches!(
+            AuthError::from(AuthClientError::Unsupported("x")),
+            AuthError::Unsupported(_)
+        ));
+        assert!(matches!(
+            AuthError::from(AuthClientError::InvalidOptions("y".to_string())),
+            AuthError::InvalidOptions(_)
+        ));
     }
 }

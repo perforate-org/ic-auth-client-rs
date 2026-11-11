@@ -11,3 +11,13 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "deps"
+    ignore:
+      # `ic-agent` drives this crate's own minor version (the pairing is written
+      # into the version), and its crypto stack is pinned to match. The
+      # scheduled "ic-agent follow" workflow owns that bump so the dependency,
+      # crate version, README table and changelog move together.
+      - dependency-name: "ic-agent"
+      - dependency-name: "k256"
+      - dependency-name: "p256"
+      - dependency-name: "pkcs8"
+      - dependency-name: "sha2"

@@ -1,16 +1,23 @@
 [package]
 name = "ic-auth-client"
-version = "0.5.0-beta.0"
+version = "0.49.0"
 authors = ["Inomoto, Yota <yota@perforate.org>"]
 license = "Apache-2.0"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.95.0"
 
 description = "A client library for Internet Computer identity authentication services."
 include = ["/src", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 documentation = "https://docs.rs/ic-auth-client/"
 repository = "https://github.com/perforate-org/ic-auth-client-rs/"
+
+# The `ic-agent` minor this release supports. `scripts/check-agent-compat.sh`
+# keeps the crate version's minor and the dependency in step with it, so that a
+# cargo-visible version bump always means "this pairs with a different ic-agent".
+[package.metadata.ic-agent]
+minor = "0.49"
+tested = "0.49.3"
 
 readme = "README.md"
 
@@ -21,82 +28,89 @@ keywords = ["icp", "internet-computer", "identity", "frontend"]
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-base64 = "0.22"
-bon = "3"
-ed25519-dalek = { version = "2.2", features = ["rand_core"] }
-futures = "0.3"
-hex = "0.4"
-ic-agent = { version = "0.45", default-features = false }
-k256 = "0.13"
-p256 = "0.13"
-parking_lot = "0.12"
-rand = "0.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2"
-tracing = { version = "0.1", optional = true }
+base64 = "0.23.1"
+bon = "3.10.3"
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
+futures = "0.3.34"
+hex = "0.4.3"
+ic-agent = { version = "0.49.3", default-features = false }
+k256 = "0.13.4"
+p256 = "0.13.2"
+parking_lot = "0.13.0"
+rand = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+url = "2.5.8"
+thiserror = "2.0.21"
+tracing = { version = "0.1.44", optional = true }
+
+# The v11 client's internals
+async-trait = "0.1"
+candid = "0.10"
 
 # `wasm-js` feature
-getrandom = { version = "0.3", optional = true }
-gloo-events = { version = "0.2", optional = true }
-gloo-timers = { version = "0.3", optional = true, features = ["futures"] }
-gloo-utils = { version = "0.2", optional = true }
-idb = { version = "0.6", optional = true }
-serde-wasm-bindgen = { version = "0.6", optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
-wasm-bindgen-futures = { version = "0.4", optional = true }
-wasm-timer = { version = "0.2", optional = true }
-web-sys = { version = "0.3", optional = true, default-features = false, features = [
+getrandom = { version = "0.4.3", optional = true }
+gloo-timers = { version = "0.4.0", optional = true, features = ["futures"] }
+idb = { version = "0.6.5", optional = true }
+wasm-bindgen = { version = "0.2.130", optional = true }
+wasm-bindgen-futures = { version = "0.4.80", optional = true }
+web-sys = { version = "0.3.107", optional = true, default-features = false, features = [
+    "BroadcastChannel",
     "Crypto",
     "CryptoKey",
     "CryptoKeyPair",
+    "DedicatedWorkerGlobalScope",
+    "Document",
+    "History",
+    "Location",
+    "Lock",
+    "LockManager",
+    "LockManagerSnapshot",
     "MessageEvent",
-    "SubtleCrypto",
+    "Navigator",
     "Storage",
+    "SubtleCrypto",
     "Url",
     "Window",
 ] }
 
 # `native` feature
-chrono = { version = "0.4", optional = true }
-futures-timer = "3.0"
-percent-encoding = { version = "2.3", optional = true }
-url = { version = "2", optional = true }
+chrono = { version = "0.4.45", optional = true }
+futures-timer = "3.0.4"
 # `keyring` feature
-keyring = { version = "3", optional = true, features = [
-    "apple-native",
-    "windows-native",
-    "sync-secret-service",
+keyring = { version = "4.2.0", optional = true, features = [
+    "apple-native-keyring-store",
+    "windows-native-keyring-store",
+    "zbus-secret-service-keyring-store",
 ] }
+keyring-core = { version = "1.0.1", optional = true }
 # `pem` feature
-pkcs8 = { version = "0.10", optional = true, features = ["pem"] }
+pkcs8 = { version = "0.10.2", optional = true, features = ["pem"] }
+# `android-password` feature
+chacha20poly1305 = { version = "0.10", optional = true }
+pbkdf2 = { version = "0.12", optional = true }
 
 # `uniffi` feature
-uniffi = { version = "0.31", optional = true, features = ["cli"] }
-sha2 = { version = "0.10", optional = true }
+uniffi = { version = "0.32.2", optional = true, features = ["cli"] }
+sha2 = { version = "0.10.9", optional = true }
 
 [dev-dependencies]
-serde_test = "1.0"
-wasm-bindgen-test = "0.3"
+wasm-bindgen-test = "0.3.80"
 
 [features]
 default = ["wasm-js"]
 
 # miniserde = []
 
-keyring = ["dep:keyring"]
+keyring = ["dep:keyring", "dep:keyring-core"]
 pem = ["dep:pkcs8", "ic-agent/pem"]
-native = ["dep:chrono", "dep:percent-encoding", "dep:url"]
+native = ["dep:chrono"]
 tracing = ["dep:tracing"]
 wasm-js = [
-    "dep:gloo-events",
     "dep:gloo-timers",
-    "dep:gloo-utils",
     "dep:idb",
-    "dep:serde-wasm-bindgen",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
-    "dep:wasm-timer",
     "dep:web-sys",
     "getrandom/wasm_js",
     "ic-agent/wasm-bindgen",
@@ -105,10 +119,14 @@ wasm-js = [
 # Hidden features
 
 ## Enable UniFFI bindings (native only)
-uniffi = ["dep:sha2", "dep:uniffi", "native"]
+uniffi = ["dep:uniffi", "native"]
 
 ## Swift bindings (UniFFI)
 swift = ["uniffi"]
+## Kotlin bindings (UniFFI)
+kotlin = ["uniffi", "android-password"]
+## Password-based encrypted storage for Android/Kotlin consumers
+android-password = ["native", "dep:sha2", "dep:chacha20poly1305", "dep:pbkdf2"]
 
 ## Test-only exports for JS/Rust storage compatibility checks (wasm)
 wasm-compat-test = ["wasm-js"]
@@ -117,10 +135,13 @@ wasm-compat-test = ["wasm-js"]
 rust-analyzer = []
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
-portpicker = "0.1"
-rdev = "0.5"
-tiny_http = "0.12"
-webbrowser = "1.0"
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+] }
+tiny_http = "0.12.0"
+webbrowser = "1.2.7"
 
 [[bin]]
 name = "uniffi-bindgen"
@@ -137,7 +158,14 @@ panic = "abort"
 wasm-opt = ["-O", "--enable-bulk-memory"]
 
 [package.metadata.docs.rs]
-features = ["keyring", "pem", "native", "tracing", "wasm-js"]
+# The browser surface is the primary one, so docs.rs builds the wasm target with
+# `wasm-js`. The native surface cannot be built for wasm, and the two do not
+# compile together on one target (the browser stores are not `Send`, which the
+# native bounds require), so it is documented on GitHub Pages instead --- see
+# README "Documentation".
+default-target = "wasm32-unknown-unknown"
+targets = []
+features = ["wasm-js", "tracing"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]

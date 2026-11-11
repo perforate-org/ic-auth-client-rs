@@ -6,11 +6,15 @@ use crate::storage::{StorageError, StoredKey};
 
 #[cfg(feature = "keyring")]
 pub mod keyring;
+#[cfg(feature = "android-password")]
+pub mod password;
 #[cfg(feature = "pem")]
 pub mod pem;
 
 #[cfg(feature = "keyring")]
 pub use keyring::KeyringStorage;
+#[cfg(feature = "android-password")]
+pub use password::PasswordStorage;
 #[cfg(feature = "pem")]
 pub use pem::PemStorage;
 

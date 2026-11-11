@@ -41,6 +41,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -473,7 +519,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -489,7 +539,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -521,69 +572,47 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
- * High-level authentication client for native platforms.
+ * A native authentication client.
  */
 public protocol AuthClientProtocol: AnyObject, Sendable {
     
     /**
-     * Return the base key type used by the client, if known.
+     * The identity requests are signed with.
      */
-    func baseKeyType()  -> String?
-    
-    func buildLoginUrl(authBridgeUrl: String, redirectUri: String, options: LoginOptions) throws  -> String
+    func identity() throws  -> AuthIdentity
     
     /**
-     * Return the delegation chain as JSON, if present.
+     * Whether this client is signed in.
      */
-    func delegationChainJson()  -> String?
-    
-    func finishLoginFromPayload(payload: String) throws 
-    
-    /**
-     * Return the underlying identity for direct cryptographic operations.
-     */
-    func identity()  -> AuthIdentity
-    
     func isAuthenticated()  -> Bool
     
     /**
-     * Start a desktop login flow using a local callback server.
+     * Signs in, blocking until the browser flow completes.
      *
-     * This is only supported on macOS, Linux, and Windows.
+     * Desktop only: the identity provider's non-browser flow hands the
+     * delegation to a `127.0.0.1` listener, which a mobile app cannot complete
+     * without a platform-hosted equivalent.
      */
-#if !os(iOS)
-    func login(authBridgeUrl: String, options: LoginOptions) throws 
-#endif
-
+    func login(options: LoginOptions) throws  -> AuthIdentity
     
     /**
-     * Clear any stored credentials.
+     * Signs out, ending the session at the identity provider where possible.
      */
-    func logout() 
+    func logout() throws 
     
     /**
-     * Return the authenticated principal as a text string.
+     * The signed-in account's principal, where there is one.
      */
-    func principalText() throws  -> String
+    func principalText()  -> String?
     
     /**
-     * Return the secp256k1 private key for the current identity.
+     * The client's answer about its sign-in.
      */
-    func secp256k1PrivateKey() throws  -> Data
-    
-    /**
-     * Return the uncompressed secp256k1 public key for the current identity.
-     */
-    func secp256k1UncompressedPublicKey() throws  -> Data
-    
-    /**
-     * Sign an Internet Computer request using the current identity.
-     */
-    func signIcRequest(message: Data, domain: String) throws  -> Data
+    func status()  -> SessionStatusRecord
     
 }
 /**
- * High-level authentication client for native platforms.
+ * A native authentication client.
  */
 open class AuthClient: AuthClientProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -625,13 +654,18 @@ open class AuthClient: AuthClientProtocol, @unchecked Sendable {
         return try! rustCall { uniffi_ic_auth_client_fn_clone_authclient(self.handle, $0) }
     }
     /**
-     * Create a new client using the provided service name.
+     * Creates a client whose credentials live in the OS keyring.
+     *
+     * `state_directory` is where the sign-in state is kept, so that a restart
+     * still knows who is signed in. Omitting it keeps the state in memory.
      */
-public convenience init(serviceName: String)throws  {
+public convenience init(serviceName: String, stateDirectory: String?)throws  {
     let handle =
         try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_constructor_authclient_new(
-        FfiConverterString.lower(serviceName),$0
+        FfiConverterString.lower(serviceName),
+        FfiConverterOptionString.lower(stateDirectory),uniffiCallStatus
     )
 }
     self.init(unsafeFromHandle: handle)
@@ -650,132 +684,77 @@ public convenience init(serviceName: String)throws  {
 
     
     /**
-     * Return the base key type used by the client, if known.
+     * The identity requests are signed with.
      */
-open func baseKeyType() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_ic_auth_client_fn_method_authclient_base_key_type(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-open func buildLoginUrl(authBridgeUrl: String, redirectUri: String, options: LoginOptions)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
-    uniffi_ic_auth_client_fn_method_authclient_build_login_url(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(authBridgeUrl),
-        FfiConverterString.lower(redirectUri),
-        FfiConverterTypeLoginOptions_lower(options),$0
-    )
-})
-}
-    
-    /**
-     * Return the delegation chain as JSON, if present.
-     */
-open func delegationChainJson() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_ic_auth_client_fn_method_authclient_delegation_chain_json(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-open func finishLoginFromPayload(payload: String)throws   {try rustCallWithError(FfiConverterTypeAuthError_lift) {
-    uniffi_ic_auth_client_fn_method_authclient_finish_login_from_payload(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(payload),$0
-    )
-}
-}
-    
-    /**
-     * Return the underlying identity for direct cryptographic operations.
-     */
-open func identity() -> AuthIdentity  {
-    return try!  FfiConverterTypeAuthIdentity_lift(try! rustCall() {
+open func identity()throws  -> AuthIdentity  {
+    return try  FfiConverterTypeAuthIdentity_lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authclient_identity(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
+    /**
+     * Whether this client is signed in.
+     */
 open func isAuthenticated() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authclient_is_authenticated(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Start a desktop login flow using a local callback server.
+     * Signs in, blocking until the browser flow completes.
      *
-     * This is only supported on macOS, Linux, and Windows.
+     * Desktop only: the identity provider's non-browser flow hands the
+     * delegation to a `127.0.0.1` listener, which a mobile app cannot complete
+     * without a platform-hosted equivalent.
      */
-@available(iOS, unavailable, message: "login is only supported on desktop targets; use AuthSession on iOS")
-open func login(authBridgeUrl: String, options: LoginOptions)throws   {try rustCallWithError(FfiConverterTypeAuthError_lift) {
+open func login(options: LoginOptions)throws  -> AuthIdentity  {
+    return try  FfiConverterTypeAuthIdentity_lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authclient_login(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(authBridgeUrl),
-        FfiConverterTypeLoginOptions_lower(options),$0
+        FfiConverterTypeLoginOptions_lower(options),uniffiCallStatus
     )
-}
+})
 }
     
     /**
-     * Clear any stored credentials.
+     * Signs out, ending the session at the identity provider where possible.
      */
-open func logout()  {try! rustCall() {
+open func logout()throws   {try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authclient_logout(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
     
     /**
-     * Return the authenticated principal as a text string.
+     * The signed-in account's principal, where there is one.
      */
-open func principalText()throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
+open func principalText() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authclient_principal_text(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Return the secp256k1 private key for the current identity.
+     * The client's answer about its sign-in.
      */
-open func secp256k1PrivateKey()throws  -> Data  {
-    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
-    uniffi_ic_auth_client_fn_method_authclient_secp256k1_private_key(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
-     * Return the uncompressed secp256k1 public key for the current identity.
-     */
-open func secp256k1UncompressedPublicKey()throws  -> Data  {
-    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
-    uniffi_ic_auth_client_fn_method_authclient_secp256k1_uncompressed_public_key(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
-     * Sign an Internet Computer request using the current identity.
-     */
-open func signIcRequest(message: Data, domain: String)throws  -> Data  {
-    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
-    uniffi_ic_auth_client_fn_method_authclient_sign_ic_request(
-            self.uniffiCloneHandle(),
-        FfiConverterData.lower(message),
-        FfiConverterString.lower(domain),$0
+open func status() -> SessionStatusRecord  {
+    return try!  FfiConverterTypeSessionStatusRecord_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ic_auth_client_fn_method_authclient_status(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -831,33 +810,33 @@ public func FfiConverterTypeAuthClient_lower(_ value: AuthClient) -> UInt64 {
 
 
 /**
- * A concrete identity instance associated with an `AuthClient`.
+ * A concrete identity, suitable for signing requests.
  */
 public protocol AuthIdentityProtocol: AnyObject, Sendable {
     
     /**
-     * Return the delegation chain as JSON, if present.
+     * The delegation chain this identity presents, as JSON.
      */
     func delegationChainJson()  -> String?
     
     /**
-     * Return the identity principal as text.
+     * The principal this identity signs as.
      */
     func principalText() throws  -> String
     
     /**
-     * Return the DER-encoded public key for the identity, if available.
+     * The DER-encoded public key this identity presents.
      */
     func publicKeyDer()  -> Data?
     
     /**
-     * Sign an arbitrary message with the identity.
+     * Signs `message` with this identity.
      */
     func signArbitrary(message: Data) throws  -> Data
     
 }
 /**
- * A concrete identity instance associated with an `AuthClient`.
+ * A concrete identity, suitable for signing requests.
  */
 open class AuthIdentity: AuthIdentityProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -913,46 +892,50 @@ open class AuthIdentity: AuthIdentityProtocol, @unchecked Sendable {
 
     
     /**
-     * Return the delegation chain as JSON, if present.
+     * The delegation chain this identity presents, as JSON.
      */
 open func delegationChainJson() -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authidentity_delegation_chain_json(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Return the identity principal as text.
+     * The principal this identity signs as.
      */
 open func principalText()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authidentity_principal_text(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Return the DER-encoded public key for the identity, if available.
+     * The DER-encoded public key this identity presents.
      */
 open func publicKeyDer() -> Data?  {
     return try!  FfiConverterOptionData.lift(try! rustCall() {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authidentity_public_key_der(
-            self.uniffiCloneHandle(),$0
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Sign an arbitrary message with the identity.
+     * Signs `message` with this identity.
      */
 open func signArbitrary(message: Data)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeAuthError_lift) {
+        uniffiCallStatus in
     uniffi_ic_auth_client_fn_method_authidentity_sign_arbitrary(
             self.uniffiCloneHandle(),
-        FfiConverterData.lower(message),$0
+        FfiConverterData.lower(message),uniffiCallStatus
     )
 })
 }
@@ -1006,69 +989,63 @@ public func FfiConverterTypeAuthIdentity_lower(_ value: AuthIdentity) -> UInt64 
 
 
 /**
- * Options for building login URLs and starting login flows.
+ * Options for [`AuthClient::login`].
  */
 public struct LoginOptions: Equatable, Hashable {
     /**
-     * Custom identity provider URL (defaults to Internet Identity if `None`).
+     * The identity provider's authorize URL (defaults to `https://id.ai/authorize`).
      */
     public var identityProvider: String?
     /**
-     * Maximum session TTL in nanoseconds.
+     * The canister that mints and revokes this application's delegations.
      */
-    public var maxTimeToLive: UInt64?
+    public var canisterId: String?
     /**
-     * Allow PIN-based authentication when supported.
-     */
-    public var allowPinAuthentication: Bool?
-    /**
-     * Derivation origin to use for the session.
+     * The origin of the application whose principal to sign in as.
+     *
+     * This is the provider's `domain` parameter: signing in "as an app" makes
+     * the principal match the one the same user has in that app's web UI.
+     * Requires the user to have enabled CLI access for their identity, and
+     * omitting it signs in as the provider's generic CLI identity instead.
      */
     public var derivationOrigin: String?
     /**
-     * Browser window features (desktop only).
+     * Maximum session lifetime in nanoseconds (sent as the provider's `ttl`).
      */
-    public var windowOpenerFeatures: String?
+    public var maxTimeToLive: UInt64?
     /**
-     * Request timeout in milliseconds.
+     * Maximum idle time in nanoseconds. No equivalent in the non-browser flow.
      */
-    public var timeoutMillis: UInt64?
-    /**
-     * Custom values JSON to pass through to the identity provider.
-     */
-    public var customValuesJson: String?
+    public var maxTimeToIdle: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
-         * Custom identity provider URL (defaults to Internet Identity if `None`).
+         * The identity provider's authorize URL (defaults to `https://id.ai/authorize`).
          */identityProvider: String?, 
         /**
-         * Maximum session TTL in nanoseconds.
-         */maxTimeToLive: UInt64?, 
+         * The canister that mints and revokes this application's delegations.
+         */canisterId: String?, 
         /**
-         * Allow PIN-based authentication when supported.
-         */allowPinAuthentication: Bool?, 
-        /**
-         * Derivation origin to use for the session.
+         * The origin of the application whose principal to sign in as.
+         *
+         * This is the provider's `domain` parameter: signing in "as an app" makes
+         * the principal match the one the same user has in that app's web UI.
+         * Requires the user to have enabled CLI access for their identity, and
+         * omitting it signs in as the provider's generic CLI identity instead.
          */derivationOrigin: String?, 
         /**
-         * Browser window features (desktop only).
-         */windowOpenerFeatures: String?, 
+         * Maximum session lifetime in nanoseconds (sent as the provider's `ttl`).
+         */maxTimeToLive: UInt64?, 
         /**
-         * Request timeout in milliseconds.
-         */timeoutMillis: UInt64?, 
-        /**
-         * Custom values JSON to pass through to the identity provider.
-         */customValuesJson: String?) {
+         * Maximum idle time in nanoseconds. No equivalent in the non-browser flow.
+         */maxTimeToIdle: UInt64?) {
         self.identityProvider = identityProvider
-        self.maxTimeToLive = maxTimeToLive
-        self.allowPinAuthentication = allowPinAuthentication
+        self.canisterId = canisterId
         self.derivationOrigin = derivationOrigin
-        self.windowOpenerFeatures = windowOpenerFeatures
-        self.timeoutMillis = timeoutMillis
-        self.customValuesJson = customValuesJson
+        self.maxTimeToLive = maxTimeToLive
+        self.maxTimeToIdle = maxTimeToIdle
     }
 
     
@@ -1088,23 +1065,19 @@ public struct FfiConverterTypeLoginOptions: FfiConverterRustBuffer {
         return
             try LoginOptions(
                 identityProvider: FfiConverterOptionString.read(from: &buf), 
-                maxTimeToLive: FfiConverterOptionUInt64.read(from: &buf), 
-                allowPinAuthentication: FfiConverterOptionBool.read(from: &buf), 
+                canisterId: FfiConverterOptionString.read(from: &buf), 
                 derivationOrigin: FfiConverterOptionString.read(from: &buf), 
-                windowOpenerFeatures: FfiConverterOptionString.read(from: &buf), 
-                timeoutMillis: FfiConverterOptionUInt64.read(from: &buf), 
-                customValuesJson: FfiConverterOptionString.read(from: &buf)
+                maxTimeToLive: FfiConverterOptionUInt64.read(from: &buf), 
+                maxTimeToIdle: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
 
     public static func write(_ value: LoginOptions, into buf: inout [UInt8]) {
         FfiConverterOptionString.write(value.identityProvider, into: &buf)
-        FfiConverterOptionUInt64.write(value.maxTimeToLive, into: &buf)
-        FfiConverterOptionBool.write(value.allowPinAuthentication, into: &buf)
+        FfiConverterOptionString.write(value.canisterId, into: &buf)
         FfiConverterOptionString.write(value.derivationOrigin, into: &buf)
-        FfiConverterOptionString.write(value.windowOpenerFeatures, into: &buf)
-        FfiConverterOptionUInt64.write(value.timeoutMillis, into: &buf)
-        FfiConverterOptionString.write(value.customValuesJson, into: &buf)
+        FfiConverterOptionUInt64.write(value.maxTimeToLive, into: &buf)
+        FfiConverterOptionUInt64.write(value.maxTimeToIdle, into: &buf)
     }
 }
 
@@ -1125,36 +1098,134 @@ public func FfiConverterTypeLoginOptions_lower(_ value: LoginOptions) -> RustBuf
 
 
 /**
+ * The client's answer about its sign-in, as a plain record.
+ */
+public struct SessionStatusRecord: Equatable, Hashable {
+    /**
+     * One of `signed-in`, `signed-in-elsewhere`, `expired`, `signed-out`.
+     */
+    public var state: String
+    /**
+     * The account's principal, where the status names one.
+     */
+    public var principal: String?
+    /**
+     * When the sign-in ends (or ended), in milliseconds since the Unix epoch.
+     */
+    public var expiresAtMs: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * One of `signed-in`, `signed-in-elsewhere`, `expired`, `signed-out`.
+         */state: String, 
+        /**
+         * The account's principal, where the status names one.
+         */principal: String?, 
+        /**
+         * When the sign-in ends (or ended), in milliseconds since the Unix epoch.
+         */expiresAtMs: UInt64?) {
+        self.state = state
+        self.principal = principal
+        self.expiresAtMs = expiresAtMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SessionStatusRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSessionStatusRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionStatusRecord {
+        return
+            try SessionStatusRecord(
+                state: FfiConverterString.read(from: &buf), 
+                principal: FfiConverterOptionString.read(from: &buf), 
+                expiresAtMs: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SessionStatusRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.state, into: &buf)
+        FfiConverterOptionString.write(value.principal, into: &buf)
+        FfiConverterOptionUInt64.write(value.expiresAtMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionStatusRecord_lift(_ buf: RustBuffer) throws -> SessionStatusRecord {
+    return try FfiConverterTypeSessionStatusRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionStatusRecord_lower(_ value: SessionStatusRecord) -> RustBuffer {
+    return FfiConverterTypeSessionStatusRecord.lower(value)
+}
+
+
+/**
  * Errors exposed by the UniFFI bindings.
  */
-public enum AuthError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+public 
+enum AuthError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
     /**
-     * A generic error message.
+     * The options handed to a call are not usable.
+     */
+    case InvalidOptions(String
+    )
+    /**
+     * A storage medium failed.
+     */
+    case Storage(String
+    )
+    /**
+     * The signer (identity provider) failed or refused.
+     */
+    case Signer(String
+    )
+    /**
+     * An agent or canister call failed.
+     */
+    case Agent(String
+    )
+    /**
+     * A sign-in exists for this domain, but this client holds no credential.
+     */
+    case SessionNotHeld
+    /**
+     * The session behind the identity no longer exists.
+     */
+    case SessionGone
+    /**
+     * A later sign-in or sign-out took over from this one.
+     */
+    case Superseded(String
+    )
+    /**
+     * The platform cannot do what was asked.
+     */
+    case Unsupported(String
+    )
+    /**
+     * Anything else.
      */
     case Message(String
-    )
-    /**
-     * Invalid JSON in `custom_values_json`.
-     */
-    case InvalidCustomValues(String
-    )
-    /**
-     * Failed to derive or serialize a principal.
-     */
-    case Principal(String
-    )
-    /**
-     * Signature creation failed.
-     */
-    case Signature(String
-    )
-    /**
-     * Key retrieval or parsing failed.
-     */
-    case Key(String
     )
 
     
@@ -1185,19 +1256,27 @@ public struct FfiConverterTypeAuthError: FfiConverterRustBuffer {
         
 
         
-        case 1: return .Message(
+        case 1: return .InvalidOptions(
             try FfiConverterString.read(from: &buf)
             )
-        case 2: return .InvalidCustomValues(
+        case 2: return .Storage(
             try FfiConverterString.read(from: &buf)
             )
-        case 3: return .Principal(
+        case 3: return .Signer(
             try FfiConverterString.read(from: &buf)
             )
-        case 4: return .Signature(
+        case 4: return .Agent(
             try FfiConverterString.read(from: &buf)
             )
-        case 5: return .Key(
+        case 5: return .SessionNotHeld
+        case 6: return .SessionGone
+        case 7: return .Superseded(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .Unsupported(
+            try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .Message(
             try FfiConverterString.read(from: &buf)
             )
 
@@ -1212,28 +1291,46 @@ public struct FfiConverterTypeAuthError: FfiConverterRustBuffer {
 
         
         
-        case let .Message(v1):
+        case let .InvalidOptions(v1):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .InvalidCustomValues(v1):
+        case let .Storage(v1):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .Principal(v1):
+        case let .Signer(v1):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .Signature(v1):
+        case let .Agent(v1):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(v1, into: &buf)
             
         
-        case let .Key(v1):
+        case .SessionNotHeld:
             writeInt(&buf, Int32(5))
+        
+        
+        case .SessionGone:
+            writeInt(&buf, Int32(6))
+        
+        
+        case let .Superseded(v1):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .Unsupported(v1):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .Message(v1):
+            writeInt(&buf, Int32(9))
             FfiConverterString.write(v1, into: &buf)
             
         }
@@ -1274,30 +1371,6 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt64.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
-    typealias SwiftType = Bool?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterBool.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterBool.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -1356,7 +1429,8 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
  * Call this before creating an `AuthClient` to avoid touching the OS keyring.
  */
 public func enableKeyringMock()  {try! rustCall() {
-    uniffi_ic_auth_client_fn_func_enable_keyring_mock($0
+        uniffiCallStatus in
+    uniffi_ic_auth_client_fn_func_enable_keyring_mock(uniffiCallStatus
     )
 }
 }
@@ -1376,58 +1450,40 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_ic_auth_client_checksum_func_enable_keyring_mock() != 27650) {
+    if (uniffi_ic_auth_client_checksum_func_enable_keyring_mock() != 58802) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_base_key_type() != 5412) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_identity() != 15665) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_build_login_url() != 28609) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_is_authenticated() != 53647) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_delegation_chain_json() != 42834) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_login() != 4723) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_finish_login_from_payload() != 59432) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_logout() != 65455) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_identity() != 36288) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_principal_text() != 43664) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_is_authenticated() != 62279) {
+    if (uniffi_ic_auth_client_checksum_method_authclient_status() != 17939) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_login() != 54307) {
+    if (uniffi_ic_auth_client_checksum_method_authidentity_delegation_chain_json() != 62716) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_logout() != 33176) {
+    if (uniffi_ic_auth_client_checksum_method_authidentity_principal_text() != 35802) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_principal_text() != 51078) {
+    if (uniffi_ic_auth_client_checksum_method_authidentity_public_key_der() != 24254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_secp256k1_private_key() != 54313) {
+    if (uniffi_ic_auth_client_checksum_method_authidentity_sign_arbitrary() != 63730) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ic_auth_client_checksum_method_authclient_secp256k1_uncompressed_public_key() != 57398) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_method_authclient_sign_ic_request() != 23209) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_method_authidentity_delegation_chain_json() != 28408) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_method_authidentity_principal_text() != 21236) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_method_authidentity_public_key_der() != 52048) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_method_authidentity_sign_arbitrary() != 36526) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ic_auth_client_checksum_constructor_authclient_new() != 42107) {
+    if (uniffi_ic_auth_client_checksum_constructor_authclient_new() != 18791) {
         return InitializationResult.apiChecksumMismatch
     }
 

@@ -34,6 +34,7 @@ use crate::ArcIdentity;
 use ic_agent::identity::{BasicIdentity, Identity, Prime256v1Identity, Secp256k1Identity};
 use k256::SecretKey as K256SecretKey;
 use p256::SecretKey as P256SecretKey;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
@@ -50,6 +51,36 @@ pub struct KeyWithRaw {
     pub(crate) key_type: BaseKeyType,
     pub(crate) key: Vec<u8>,
     pub(crate) identity: ArcIdentity,
+}
+
+/// Generates a random P-256 (Prime256v1) secret key using the platform RNG.
+///
+/// `p256` 0.13 is pinned to match `ic-agent`, whose `Prime256v1Identity`
+/// constructors consume `p256` 0.13 `SecretKey` values. Its `SecretKey::random`
+/// expects a `rand_core` 0.6 generator, so the key is drawn from the crate's
+/// `rand` 0.10 RNG and parsed instead.
+pub(crate) fn random_p256_secret_key() -> P256SecretKey {
+    let mut bytes = [0u8; 32];
+    loop {
+        rand::rng().fill_bytes(&mut bytes);
+        if let Ok(secret) = P256SecretKey::from_slice(&bytes) {
+            return secret;
+        }
+    }
+}
+
+/// Generates a random secp256k1 secret key using the platform RNG.
+///
+/// See [`random_p256_secret_key`] for why the key is drawn from `rand` 0.10
+/// rather than `SecretKey::random`.
+pub(crate) fn random_k256_secret_key() -> K256SecretKey {
+    let mut bytes = [0u8; 32];
+    loop {
+        rand::rng().fill_bytes(&mut bytes);
+        if let Ok(secret) = K256SecretKey::from_slice(&bytes) {
+            return secret;
+        }
+    }
 }
 
 impl KeyWithRaw {
@@ -187,7 +218,7 @@ impl From<&ArcIdentity> for Key {
 }
 
 /// Enum representing the type of base key used for the identity.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum BaseKeyType {
     /// Ed25519 base key type.
     #[default]
@@ -237,14 +268,10 @@ impl BaseKeyType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::SecretKey as K256SecretKey;
-    use p256::SecretKey as P256SecretKey;
-    use rand::rngs::OsRng;
 
     #[test]
     fn test_prime256v1_key_with_raw() {
-        let mut rng = OsRng;
-        let secret = P256SecretKey::random(&mut rng);
+        let secret = random_p256_secret_key();
         let raw = secret.to_sec1_der().unwrap().to_vec();
         let key = KeyWithRaw::new_with_type(BaseKeyType::Prime256v1, raw).unwrap();
         assert_eq!(key.key_type(), BaseKeyType::Prime256v1);
@@ -253,8 +280,7 @@ mod tests {
 
     #[test]
     fn test_secp256k1_key_with_raw() {
-        let mut rng = OsRng;
-        let secret = K256SecretKey::random(&mut rng);
+        let secret = random_k256_secret_key();
         let raw = secret.to_sec1_der().unwrap().to_vec();
         let key = KeyWithRaw::new_with_type(BaseKeyType::Secp256k1, raw).unwrap();
         assert_eq!(key.key_type(), BaseKeyType::Secp256k1);

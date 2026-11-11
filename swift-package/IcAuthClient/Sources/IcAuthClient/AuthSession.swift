@@ -1,133 +1,62 @@
 import Foundation
 
-#if os(iOS)
-    import UIKit
-#elseif os(macOS)
-    import AppKit
-#endif
-
+/// A convenience wrapper around the v11 sign-in flow.
+///
+/// The Rust client now drives the whole ceremony itself: it discovers the
+/// identity provider's non-browser sign-in route, binds a loopback callback,
+/// opens the system browser, receives the delegation and validates it. There is
+/// therefore no bridge URL, no redirect URI and no callback payload to hand back
+/// — one blocking `login` call carries the flow from start to finish.
+///
+/// The flow needs a `127.0.0.1` HTTP callback, which is a desktop capability
+/// today (macOS, Linux, Windows). On iOS the Rust side returns
+/// `AuthError.Unsupported`; a platform-hosted equivalent is still pending.
 @MainActor
-public final class AuthSession: NSObject {
+public final class AuthSession {
     private let client: AuthClient
-    private var pendingCompletion: ((Result<Void, Error>) -> Void)?
-    private var pendingRedirectScheme: String?
 
     public init(client: AuthClient) {
         self.client = client
     }
 
-    #if os(iOS)
-        public func login(
-            authBridgeUrl: String,
-            redirectUri: String,
-            options: LoginOptions,
-            completion: @escaping (Result<Void, Error>) -> Void
-        ) {
-            startSession(
-                authBridgeUrl: authBridgeUrl,
-                redirectUri: redirectUri,
-                options: options,
-                completion: completion
-            )
-        }
-    #endif
-
-    #if os(macOS)
-        public func login(
-            authBridgeUrl: String,
-            redirectUri: String,
-            options: LoginOptions,
-            completion: @escaping (Result<Void, Error>) -> Void
-        ) {
-            startSession(
-                authBridgeUrl: authBridgeUrl,
-                redirectUri: redirectUri,
-                options: options,
-                completion: completion
-            )
-        }
-    #endif
-
-    private func startSession(
-        authBridgeUrl: String,
-        redirectUri: String,
-        options: LoginOptions,
-        completion: @escaping (Result<Void, Error>) -> Void
+    /// Signs in, calling `completion` on the main actor with the identity.
+    ///
+    /// The work happens off the main actor because `login` blocks until the user
+    /// finishes in the browser; the callback hops back so callers can touch UI
+    /// directly.
+    public func login(
+        options: LoginOptions = LoginOptions(),
+        completion: @escaping (Result<AuthIdentity, Error>) -> Void
     ) {
-        do {
-            let loginUrl = try client.buildLoginUrl(
-                authBridgeUrl: authBridgeUrl,
-                redirectUri: redirectUri,
-                options: options
-            )
-
-            guard let url = URL(string: loginUrl) else {
-                completion(.failure(NSError(domain: "AuthSession", code: 1)))
-                return
+        let client = self.client
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Result<AuthIdentity, Error>
+            do {
+                result = .success(try client.login(options: options))
+            } catch {
+                result = .failure(error)
             }
-
-            let redirectScheme = URL(string: redirectUri)?.scheme
-            pendingRedirectScheme = redirectScheme
-
-            pendingCompletion = completion
-            openExternalBrowser(url: url) { [weak self] success in
-                guard let self else { return }
-                if !success {
-                    self.pendingCompletion = nil
-                    self.pendingRedirectScheme = nil
-                    completion(.failure(NSError(domain: "AuthSession", code: 3)))
-                }
+            Task { @MainActor in
+                completion(result)
             }
-        } catch {
-            completion(.failure(error))
         }
     }
 
-    @discardableResult
-    public func handleCallbackUrl(_ url: URL) -> Bool {
-        return handleCallbackUrl(url, completion: pendingCompletion)
-    }
-
-    private func handleCallbackUrl(_ url: URL, completion: ((Result<Void, Error>) -> Void)?) -> Bool
-    {
-        if let expectedScheme = pendingRedirectScheme, url.scheme != expectedScheme {
-            return false
-        }
-
-        guard
-            let payload = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?
-                .first(where: { $0.name == "payload" })?.value
-        else {
-            completion?(.failure(NSError(domain: "AuthSession", code: 2)))
-            pendingCompletion = nil
-            pendingRedirectScheme = nil
-            return false
-        }
-
-        do {
-            try client.finishLoginFromPayload(payload: payload)
-            completion?(.success(()))
-            pendingCompletion = nil
-            pendingRedirectScheme = nil
-            return true
-        } catch {
-            completion?(.failure(error))
-            pendingCompletion = nil
-            pendingRedirectScheme = nil
-            return false
-        }
-    }
-
-    private func openExternalBrowser(url: URL, completion: @escaping (Bool) -> Void) {
-        #if os(iOS)
-            UIApplication.shared.open(url, options: [:]) { success in
-                completion(success)
+    /// Signs out, clearing the stored credentials and ending the session at the
+    /// identity provider where it can.
+    public func logout(completion: @escaping (Result<Void, Error>) -> Void) {
+        let client = self.client
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Result<Void, Error>
+            do {
+                try client.logout()
+                result = .success(())
+            } catch {
+                result = .failure(error)
             }
-        #elseif os(macOS)
-            completion(NSWorkspace.shared.open(url))
-        #else
-            completion(false)
-        #endif
+            Task { @MainActor in
+                completion(result)
+            }
+        }
     }
 }

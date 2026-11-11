@@ -136,12 +136,6 @@ impl PemStorage {
     }
 
     fn write_json_value(&mut self, key: &str, value: StoredKey) -> Result<(), StorageError> {
-        #[cfg(feature = "wasm-js")]
-        if matches!(value, StoredKey::CryptoKeyPair(_)) {
-            return Err(StorageError::File(
-                "CryptoKeyPair cannot be stored in PEM storage".to_string(),
-            ));
-        }
         self.ensure_directory()?;
         let path = self.file_path(key);
         let serialized = serde_json::to_string(&PemStoredValue::from(&value))
@@ -168,10 +162,6 @@ impl PemStorage {
                 let stored = StoredKey::String(string);
                 stored.decode_ed25519().map_err(StorageError::from)
             }
-            #[cfg(feature = "wasm-js")]
-            StoredKey::CryptoKeyPair(_) => Err(StorageError::File(
-                "CryptoKeyPair cannot be stored in PEM storage".to_string(),
-            )),
         }
     }
 }
@@ -202,8 +192,6 @@ impl From<&StoredKey> for PemStoredValue {
                 PemStoredValue::Raw(BASE64_STANDARD_NO_PAD.encode(bytes.as_slice()))
             }
             StoredKey::String(string) => PemStoredValue::String(string.clone()),
-            #[cfg(feature = "wasm-js")]
-            StoredKey::CryptoKeyPair(_) => PemStoredValue::String("".to_string()),
         }
     }
 }
@@ -270,12 +258,6 @@ impl AuthClientStorage for PemStorage {
                         self.write_json_value(key, stored)?;
                         let _ = fs::remove_file(self.key_file_path());
                     }
-                }
-                #[cfg(feature = "wasm-js")]
-                StoredKey::CryptoKeyPair(_) => {
-                    return Err(StorageError::File(
-                        "CryptoKeyPair cannot be stored in PEM storage".to_string(),
-                    ));
                 }
             }
             return Ok(());

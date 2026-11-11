@@ -9,8 +9,9 @@ pkg/
 
 # JavaScript
 node_modules/
-ii-bridge/package-lock.json
 package-lock.json
+.gradle/
+kotlin-package/**/build/
 
 # Swift
 Package.resolved
@@ -20,6 +21,10 @@ examples/swift/**/*.xcodeproj/
 
 # UniFFI
 uniffi/generated/
+kotlin-package/**/src/main/jniLibs/
+
+# Gradle (repository root build output)
+/build/
 
 # Various IDEs and Editors
 .vscode/

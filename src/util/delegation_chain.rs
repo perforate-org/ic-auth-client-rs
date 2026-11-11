@@ -42,7 +42,6 @@ impl DelegationChain {
     ///
     /// This format uses camelCase keys and hex-encoded binary data,
     /// compatible with the JavaScript `icp-js-auth` library.
-    #[cfg(feature = "wasm-js")]
     pub fn to_js_json(&self) -> String {
         use crate::storage::js_compat::JsDelegationChain;
         let js_chain = JsDelegationChain::from_delegation_chain(self);
@@ -53,7 +52,6 @@ impl DelegationChain {
     ///
     /// This format uses camelCase keys and hex-encoded binary data,
     /// compatible with the JavaScript `icp-js-auth` library.
-    #[cfg(feature = "wasm-js")]
     pub fn from_js_json(json: &str) -> Result<Self, crate::storage::DecodeError> {
         use crate::storage::js_compat::JsDelegationChain;
         let js_chain: JsDelegationChain = serde_json::from_str(json).map_err(|e| {
@@ -65,7 +63,6 @@ impl DelegationChain {
     /// Deserialize a [`DelegationChain`] from either JS or Rust JSON format.
     ///
     /// Automatically detects the format based on the JSON structure.
-    #[cfg(feature = "wasm-js")]
     pub fn from_any_json(json: &str) -> Result<Self, crate::storage::DecodeError> {
         use crate::storage::js_compat::{DelegationFormat, detect_delegation_format};
 
@@ -102,10 +99,10 @@ impl DelegationChain {
             let checks: HashSet<_> = checks.into_iter().collect();
             for signed_delegation in self.delegations.iter() {
                 let delegation = &signed_delegation.delegation;
-                if let Some(targets) = delegation.targets.clone() {
-                    if targets.iter().all(|target| !checks.contains(target)) {
-                        return false;
-                    }
+                if let Some(targets) = delegation.targets.clone()
+                    && targets.iter().all(|target| !checks.contains(target))
+                {
+                    return false;
                 }
             }
         }
@@ -161,6 +158,7 @@ mod tests {
                     pubkey: vec![],
                     expiration: 0,
                     targets: None,
+                    permissions: None,
                 },
                 signature: vec![],
             }],

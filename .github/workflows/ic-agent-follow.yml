@@ -1,0 +1,165 @@
+name: ic-agent follow
+
+# Tracks crates.io and prepares the release that pairs with a new `ic-agent`.
+#
+# This crate's public API is `ic-agent`'s: `ic_agent::Identity` values, `Principal`s
+# and the delegation types. Another `ic-agent` is another `Identity` trait, so a
+# new `ic-agent` is a new minor of this crate (README "Version compatibility for
+# `ic-agent`"). This workflow does the mechanical part and leaves the judgement
+# to the PR: a green run opens a ready PR, a red one opens a draft with the log.
+
+on:
+  schedule:
+    # 21:00 UTC = 06:00 Asia/Tokyo
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  follow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Current pairing
+        id: current
+        run: |
+          minor="$(sed -n '/^\[package\.metadata\.ic-agent\]/,/^\[/s/^minor = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          tested="$(sed -n '/^\[package\.metadata\.ic-agent\]/,/^\[/s/^tested = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          test -n "$minor" || { echo "no [package.metadata.ic-agent] minor in Cargo.toml" >&2; exit 1; }
+          echo "minor=$minor" >> "$GITHUB_OUTPUT"
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
+      - name: Latest ic-agent release
+        id: latest
+        run: |
+          version="$(curl -fsSL \
+            -A 'ic-auth-client-rs follow workflow (https://github.com/perforate-org/ic-auth-client-rs)' \
+            https://crates.io/api/v1/crates/ic-agent |
+            python3 -c 'import json,sys; data=json.load(sys.stdin); versions=[v["num"] for v in data["versions"] if not v["yanked"] and "-" not in v["num"]]; print(versions[0])')"
+          test -n "$version" || { echo "could not read ic-agent versions from crates.io" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "minor=${version%.*}" >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to do
+        if: steps.latest.outputs.version == steps.current.outputs.tested
+        run: echo "already on ic-agent ${{ steps.current.outputs.tested }}; nothing to do"
+
+      - name: Move within the pairing
+        if: steps.latest.outputs.version != steps.current.outputs.tested && steps.latest.outputs.minor == steps.current.outputs.minor
+        run: |
+          ./scripts/bump-ic-agent.sh "${{ steps.latest.outputs.version }}" --keep-crate-version
+          cargo update -p ic-agent
+
+      - name: Move to a new pairing
+        if: steps.latest.outputs.minor != steps.current.outputs.minor
+        run: |
+          ./scripts/bump-ic-agent.sh "${{ steps.latest.outputs.version }}"
+          cargo update -p ic-agent
+
+      - name: Verify
+        id: verify
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            ./scripts/check-agent-compat.sh
+            cargo fmt --check
+            cargo test --no-default-features --features native,keyring -- --test-threads=1
+            cargo test --no-default-features --features native,pem -- --test-threads=1
+            cargo check --no-default-features --features native,keyring,android-password
+            cargo check --no-default-features --features native,keyring,swift
+            cargo check --no-default-features --features native,keyring,kotlin
+            RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js
+          } 2>&1 | tee /tmp/verify.log
+
+      - name: Report a broken patch release
+        if: steps.latest.outputs.version == steps.current.outputs.tested && steps.verify.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          log_tail="$(tail -n 120 /tmp/verify.log 2>/dev/null || true)"
+          {
+            echo "The repository is already on ${VERSION}, but verifying it failed."
+            echo
+            printf '%s\n' '```'
+            echo "$log_tail"
+            printf '%s\n' '```'
+          } > /tmp/issue-body.md
+          existing="$(gh issue list --state open --search "ic-agent ${VERSION} in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/issue-body.md
+          else
+            gh issue create --title "broken: ic-agent ${VERSION} does not pass verification" --body-file /tmp/issue-body.md
+          fi
+
+      - name: Open the PR
+        if: steps.latest.outputs.version != steps.current.outputs.tested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ steps.latest.outputs.version }}
+          NEW_MINOR: ${{ steps.latest.outputs.minor }}
+          OLD_MINOR: ${{ steps.current.outputs.minor }}
+          VERIFIED: ${{ steps.verify.outcome }}
+        run: |
+          set -eu
+          branch="agent/ic-agent-${NEW_MINOR}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "no changes to propose"
+            exit 0
+          fi
+
+          git checkout -B "$branch"
+          git add -A
+          git commit -m "build(release): follow ic-agent ${NEW_VERSION}"
+
+          log_tail="$(tail -n 120 /tmp/verify.log 2>/dev/null || true)"
+          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+
+          {
+            echo "crates.io publishes \`ic-agent\` **${NEW_VERSION}** (pairing \`${NEW_MINOR}\`)."
+            echo
+            echo "This PR moves the crate onto it:"
+            echo
+            echo "- \`Cargo.toml\`: the \`ic-agent\` dependency"
+            if [ "$OLD_MINOR" != "$NEW_MINOR" ]; then
+              echo "- \`Cargo.toml\`: this crate's version (\`${NEW_MINOR}\` pairing)"
+              echo "- \`README.md\` and \`CHANGELOG.md\`: the pairing"
+            fi
+            echo
+            if [ "$VERIFIED" = "success" ]; then
+              echo "Verification: green (fmt, native tests, wasm32 check, UniFFI and storage feature checks)."
+            else
+              echo "**Verification failed** --- this is a draft until it is fixed."
+              echo
+              printf '%s\n' '```'
+              echo "$log_tail"
+              printf '%s\n' '```'
+            fi
+            echo
+            echo "Review the diff, merge, then tag \`v${crate_version}\` to publish."
+          } > /tmp/pr-body.md
+
+          git push --force-with-lease origin "$branch"
+
+          if [ "$VERIFIED" = "success" ]; then
+            gh pr create --title "build(release): follow ic-agent ${NEW_VERSION}" \
+              --body-file /tmp/pr-body.md --base main --head "$branch" || true
+          else
+            gh pr create --draft --title "build(release): follow ic-agent ${NEW_VERSION}" \
+              --body-file /tmp/pr-body.md --base main --head "$branch" || true
+          fi
