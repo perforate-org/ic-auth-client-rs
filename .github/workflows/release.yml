@@ -1,0 +1,52 @@
+name: release
+
+# Publishing is a tag: `v0.49.0` publishes `ic-auth-client 0.49.0` after the same
+# checks CI runs. The `ic-agent follow` workflow prepares the commit and the
+# version bump; a person reviews and tags it.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only run `cargo publish --dry-run`"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: The tag names this version
+        if: github.event_name == 'push'
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          test "v${version}" = "${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} does not match v${version} in Cargo.toml" >&2; exit 1; }
+
+      - run: cargo fmt --check
+      - run: ./scripts/check-agent-compat.sh
+      - run: cargo test --no-default-features --features native,keyring -- --test-threads=1
+      - run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo check --target wasm32-unknown-unknown --no-default-features --features wasm-js
+
+      - name: Dry run
+        run: cargo publish --dry-run
+
+      - name: Publish
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
+
+      - name: Docs
+        run: cargo doc --no-deps --no-default-features --features native,keyring

@@ -280,6 +280,28 @@ v11-only.
 | Swift/Kotlin hand-written wrappers, example applications | **remaining** (they still call the removed v5 surface; see [`examples/README.md`](examples/README.md)) |
 | Storage-format conformance tests against the JavaScript library (`compat-tests/`) | **remaining** (still targets v5) |
 
+## Releasing
+
+The minor version names the `ic-agent` pairing, so a new `ic-agent` minor is a
+new minor of this crate:
+
+- `scripts/bump-ic-agent.sh <version>` moves the dependency, the crate version,
+  `[package.metadata.ic-agent]`, the compatibility table and the changelog in one
+  step. The scheduled **ic-agent follow** workflow does this when crates.io
+  publishes a new `ic-agent`: a green run opens a ready pull request, a red one
+  opens a draft with the failing log. `scripts/check-agent-compat.sh` fails CI if
+  the version, metadata and dependency ever drift apart.
+- Tag the merge commit `v<version>` (for example `v0.49.0`). The **release**
+  workflow checks the tag against `Cargo.toml`, runs the tests and publishes to
+  crates.io with the `CRATES_IO_TOKEN` repository secret.
+- A patch release within a pairing (a fix, or a dependency patch bump that needs
+  a new release) uses `scripts/bump-ic-agent.sh <version> --keep-crate-version`
+  and a patch version here.
+
+The follow workflow opens pull requests with the repository's `GITHUB_TOKEN`;
+the repository must allow that under *Settings → Actions → General → Workflow
+permissions* ("Allow GitHub Actions to create and approve pull requests").
+
 ## License
 
 This project is licensed under [Apache License, Version 2.0](./LICENSE-APACHE).

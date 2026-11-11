@@ -80,7 +80,46 @@ if not moved_version:
 path.write_text("\n".join(out) + "\n")
 PY
 
+# The compatibility table and the changelog say the same thing to humans; keep
+# them in step so the PR only needs the test outcome added to it.
+python3 - "$version" "$minor_pair" "$keep_crate_version" <<'PY'
+import pathlib
+import re
+import sys
+
+version, pair, keep = sys.argv[1], sys.argv[2], sys.argv[3]
+
+readme = pathlib.Path("README.md")
+text = readme.read_text()
+row = f"| {pair}.\\*            | {pair}.\\*                   | 11.x                     |"
+if row not in text:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("| `ic-agent` version |"):
+            # header, separator, then the rows
+            insert_at = index + 2
+            lines.insert(insert_at, row)
+            break
+    else:
+        sys.exit("error: no compatibility table in README.md")
+    readme.write_text("\n".join(lines) + "\n")
+
+if keep != "--keep-crate-version":
+    changelog = pathlib.Path("CHANGELOG.md")
+    text = changelog.read_text()
+    entry = f"- Compatibility: built against `ic-agent {pair}.*`.\n"
+    if entry not in text:
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("## Unreleased"):
+                lines.insert(index + 1, "")
+                lines.insert(index + 2, entry.rstrip("\n"))
+                break
+        else:
+            lines[0:0] = ["## Unreleased", "", entry.rstrip("\n"), ""]
+        changelog.write_text("\n".join(lines) + "\n")
+PY
+
 printf 'ic-agent -> %s (pairs with %s)\n' "$version" "$minor_pair"
-[ "$keep_crate_version" = "--keep-crate-version" ] || printf 'crate version -> %s.0\n' "$minor_pair"
-printf 'next: update CHANGELOG.md and the compatibility table in README.md,\n'
-printf 'then run the test matrix (CI does this too).\n'
+[ "$keep_crate_version" = "--keep-crate-version" ] || printf 'crate version -> %s.0 (README row and CHANGELOG entry added)\n' "$minor_pair"
+printf 'next: run the test matrix (CI does this too) and review the PR.\n'
