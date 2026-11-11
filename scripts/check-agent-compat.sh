@@ -49,15 +49,24 @@ printf 'metadata:   minor %s, tested with %s\n' "$metadata_minor" "$metadata_tes
 
 if [ "${1:-}" != "--no-tree" ]; then
     command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"
-    # Two copies of a crypto stack is how a duplicate `ic-agent` sneaks in: it
-    # resolves its own k256/p256/pkcs8/sha2, and the identity it produces would
-    # not be the one this crate signs with.
-    duplicates="$(cargo tree -e normal -d 2>/dev/null | grep -E '^(ic-agent|k256|p256|pkcs8|sha2) v' || true)"
+    # The hazard is a second `ic-agent`: it is a second `Identity` trait, and the
+    # identity this crate hands out does not typecheck against it. A duplicated
+    # sha2/k256/p256 is common in the ecosystem and harmless --- the types that
+    # cross this crate's API are `ic-agent`'s --- so it is reported, not failed.
+    tree="$(cargo tree -e normal -d 2>&1)" || {
+        printf '%s\n' "$tree" >&2
+        fail "cargo tree failed (run cargo fetch first)"
+    }
+    duplicates="$(printf '%s\n' "$tree" | grep -E '^ic-agent v' || true)"
     if [ -n "$duplicates" ]; then
         printf '%s\n' "$duplicates" >&2
-        fail "duplicate ic-agent/crypto crates in the dependency graph"
+        fail "more than one ic-agent in the dependency graph; depend on ic_auth_client::ic_agent instead of adding your own"
     fi
-    printf 'dependency graph: one ic-agent and one crypto stack\n'
+    crypto="$(printf '%s\n' "$tree" | grep -E '^(k256|p256|pkcs8|sha2) v' || true)"
+    if [ -n "$crypto" ]; then
+        printf 'note: several versions of a crypto crate resolve (harmless without a duplicate ic-agent):\n%s\n' "$crypto"
+    fi
+    printf 'dependency graph: one ic-agent\n'
 fi
 
 printf 'ok: version and ic-agent pairing agree\n'
