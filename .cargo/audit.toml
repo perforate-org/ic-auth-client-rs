@@ -1,0 +1,19 @@
+# What `cargo audit` may pass over, and why.
+#
+# Keep this file short: every entry is a decision someone made, and each one
+# should name what would let it go.
+
+[advisories]
+ignore = [
+    # `crypto-bigint` 0.5.5 has timing variability in operations meant to be
+    # constant-time (RUSTSEC-2026-0387). The fix is `crypto-bigint >= 0.7.6`,
+    # which is a different RustCrypto generation (`elliptic-curve` 0.14,
+    # `k256`/`p256` 0.14) --- and the `k256`/`p256` this crate signs with must be
+    # the same ones `ic-agent` uses, or the identities are two incompatible
+    # types. The dependency is therefore not this crate's to move: it goes away
+    # when the crate moves to an `ic-agent` built on that generation (the
+    # `ic-agent` follow workflow and the version pairing in the README).
+    #
+    # Re-check this entry whenever the crate's minor changes.
+    "RUSTSEC-2026-0387",
+]

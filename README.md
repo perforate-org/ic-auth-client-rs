@@ -321,6 +321,33 @@ The follow workflow opens pull requests with the repository's `GITHUB_TOKEN`;
 the repository must allow that under *Settings → Actions → General → Workflow
 permissions* ("Allow GitHub Actions to create and approve pull requests").
 
+## Security
+
+The crate inherits the cryptography of the packages it depends on, and one
+advisory is currently open because of that:
+
+- **RUSTSEC-2026-0387** (`crypto-bigint` 0.5.5, timing variability in
+  constant-time operations). The fix is `crypto-bigint >= 0.7.6`, part of the
+  RustCrypto generation `ic-agent 0.49` does not use yet. This crate signs with
+  `k256`/`p256`, and those must be the same versions `ic-agent` uses --- a
+  different generation is a different `Identity`, and the identity this crate
+  hands out would not typecheck against the agent. It is recorded in
+  [`.cargo/audit.toml`](.cargo/audit.toml) and goes away with the `ic-agent` bump; `cargo
+  audit` runs in CI, so it is re-checked on every push.
+
+If your threat model includes an attacker who can measure signing time on the
+same machine, treat that advisory as unfixed for this release.
+
+Two other properties are deliberate and worth knowing:
+
+- In the browser the credential keys are **extractable** (sync signing through
+  `ic-agent` requires it), unlike upstream's non-extractable `CryptoKey`s. A
+  successful XSS can therefore read the session keys; the session delegation,
+  not the key's extractability, is what bounds the damage.
+- `get_identity()`/`sign_in()` hand out a `ClientIdentity` whose delegation is
+  replaced as it ages; the handle is not a snapshot, and `delegation_expires_at_ms()`
+  says when the delegation behind it ends.
+
 ## License
 
 This project is licensed under [Apache License, Version 2.0](./LICENSE-APACHE).

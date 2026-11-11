@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.49.0] - 2026-11-12
 
+### Security
+
+- `cargo audit` runs in CI. One advisory is open and recorded in `.cargo/audit.toml`:
+  RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability). Its fix is a
+  RustCrypto generation this crate cannot adopt without breaking the `ic-agent`
+  identity interop, so it is carried until the `ic-agent` bump. See README
+  "Security", including the note on extractable browser keys.
+
 ### Changed
 
 - **BREAKING**: Following `@icp-sdk/auth` v11 means the client is now a *view on

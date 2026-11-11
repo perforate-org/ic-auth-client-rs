@@ -22,6 +22,17 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  audit:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      # `audit.toml` records the advisories that cannot be fixed from here,
+      # each with the reason and what would let it go.
+      - run: cargo audit
+
   compat:
     name: ic-agent pairing
     runs-on: ubuntu-latest
