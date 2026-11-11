@@ -1969,9 +1969,12 @@ mod browser_tests {
         let journal = serde_json::json!({
             "createdAt": web_sys::js_sys::Date::now() as u64,
             "url": "https://signer.example.com/icrc-167",
-            "results": {},
+            "results": {"1": {"jsonrpc": "2.0", "id": 2, "result": {}}},
             "asyncSlots": [],
-            "requestKeys": {"0": request_fingerprint(&request)},
+            "requestKeys": {
+                "0": request_fingerprint(&request),
+                "1": request_fingerprint(&request),
+            },
             "pending": {"state": "S", "requests": [{"index": 0, "id": 1}]}
         });
         storage()

@@ -35,7 +35,6 @@ use futures::FutureExt as _;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::BroadcastChannel;
-use web_sys::CryptoKeyPair;
 use web_sys::js_sys::{Array, Function, Promise};
 
 use crate::ArcIdentity;
@@ -465,9 +464,7 @@ impl SharedInner {
         let secret = match secret {
             Some(secret) => secret,
             None => {
-                let key_pair = wasm::get_prop(entry, "keyPair")?
-                    .dyn_into::<CryptoKeyPair>()
-                    .ok()?;
+                let key_pair = p256::key_pair_from_value(&wasm::get_prop(entry, "keyPair")?)?;
                 p256::secret_from_key_pair(&key_pair).await.ok()??
             }
         };

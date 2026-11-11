@@ -30,8 +30,7 @@
 use std::cell::RefCell;
 
 use async_trait::async_trait;
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::CryptoKeyPair;
+use wasm_bindgen::JsValue;
 
 use crate::ArcIdentity;
 use crate::client::credentials::p256;
@@ -107,8 +106,8 @@ impl CredentialStorage for IdbCredentialStorage {
         let Some(record) = database.get(slot).await? else {
             return Ok(None);
         };
-        let Some(key_pair) = wasm::get_prop(&record, "keyPair")
-            .and_then(|value| value.dyn_into::<CryptoKeyPair>().ok())
+        let Some(key_pair) =
+            wasm::get_prop(&record, "keyPair").and_then(|value| p256::key_pair_from_value(&value))
         else {
             return Ok(None);
         };

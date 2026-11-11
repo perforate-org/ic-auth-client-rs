@@ -152,6 +152,25 @@ pub(crate) async fn key_pair_from_secret(scalar: &[u8]) -> Result<CryptoKeyPair,
     Ok(CryptoKeyPair::new(&private, &public))
 }
 
+/// Reads a `CryptoKeyPair` out of a value that crossed a JavaScript boundary.
+///
+/// `CryptoKeyPair` is a WebIDL *dictionary*, not an interface: there is no
+/// constructor for `dyn_into` to test against, so a pair that came back from
+/// IndexedDB or `postMessage` is a plain object and `dyn_into` refuses it. The
+/// two properties are what actually matter, so build the handle from them.
+pub(crate) fn key_pair_from_value(value: &JsValue) -> Option<CryptoKeyPair> {
+    if let Ok(pair) = value.clone().dyn_into::<CryptoKeyPair>() {
+        return Some(pair);
+    }
+    let private = wasm::get_prop(value, "privateKey")?
+        .dyn_into::<CryptoKey>()
+        .ok()?;
+    let public = wasm::get_prop(value, "publicKey")?
+        .dyn_into::<CryptoKey>()
+        .ok()?;
+    Some(CryptoKeyPair::new(&private, &public))
+}
+
 /// The private scalar behind a key pair, when the browser lets it be read.
 ///
 /// `None` is the JS→Rust interop limit: a pair JS v11 generated is
