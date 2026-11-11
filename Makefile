@@ -34,6 +34,9 @@ doc:
 build-swift:
 	./swift-package/IcAuthClient/build_all.sh
 
+build-kotlin:
+	./kotlin-package/IcAuthClient/build_all.sh
+
 clean:
 	rm -rf target
 	rm -rf pkg
