@@ -20,7 +20,7 @@
 //! # The seam
 //!
 //! The session layer is transport-agnostic once an
-//! [`AppDelegationSource`](app_delegation_source::AppDelegationSource) is
+//! [`AppDelegationSource`] is
 //! injected: the identity decides *when* to mint, the source decides *how*. The
 //! same identity serves `wasm-js` and `native`; only the source differs.
 

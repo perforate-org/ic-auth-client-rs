@@ -16,7 +16,6 @@
 compile_error!("Either feature \"native\" or \"wasm-js\" must be enabled for this crate");
 
 #[cfg(feature = "tracing")]
-#[macro_use]
 extern crate tracing;
 
 /// The `ic-agent` this crate is built against.

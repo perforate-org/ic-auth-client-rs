@@ -12,7 +12,7 @@
 //! - [`sso`] --- organization-domain sign-in status
 //! - [`notification_consent`] --- whether Internet Identity may send notifications
 //! - [`foreground_refresh`] --- browser hints that the user is back
-//! - [`error`], [`options`], [`slots`], [`base64`] --- shared vocabulary
+//! - `error`, [`options`], [`slots`], [`base64`] --- shared vocabulary
 //!
 //! Upstream's root module deliberately throws; a Rust crate cannot, so the
 //! equivalent rule is that everything is exported from this one module and

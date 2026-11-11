@@ -158,7 +158,9 @@ panic = "abort"
 wasm-opt = ["-O", "--enable-bulk-memory"]
 
 [package.metadata.docs.rs]
-features = ["keyring", "pem", "native", "tracing", "wasm-js"]
+# Host target, so `native` (and not `wasm-js`: the browser stores are not `Send`
+# on a host target, and the native bound requires it).
+features = ["keyring", "pem", "native", "tracing"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]

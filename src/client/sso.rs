@@ -851,13 +851,25 @@ fn spawn_drive(checker: Arc<SsoStatusChecker>, run: u64) {
             checker.drive(run).await;
         });
     }
-    #[cfg(not(all(target_arch = "wasm32", feature = "wasm-js")))]
+    // A thread needs `Send`, which the browser build's futures deliberately are
+    // not: they are only ever run by the browser's executor.
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     {
         std::thread::spawn(move || {
             futures::executor::block_on(async move {
                 checker.drive(run).await;
             });
         });
+    }
+    // Neither the browser nor a native target: a host build of the `wasm-js`
+    // feature, as `cargo package --verify` and docs.rs make. Nothing runs there,
+    // so there is nothing to drive.
+    #[cfg(not(any(
+        all(target_arch = "wasm32", feature = "wasm-js"),
+        all(feature = "native", not(target_arch = "wasm32"))
+    )))]
+    {
+        let _ = (checker, run);
     }
 }
 
