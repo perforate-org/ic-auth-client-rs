@@ -19,6 +19,13 @@ test-native-keyring:
 test-native-pem:
 	cargo test --no-default-features --features native,pem
 
+check-agent-compat:
+	./scripts/check-agent-compat.sh
+
+bump-ic-agent:
+	@test -n "$(VERSION)" || (echo "usage: make bump-ic-agent VERSION=0.50.0" && false)
+	./scripts/bump-ic-agent.sh "$(VERSION)"
+
 test-chrome:
 	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack test --chrome
 

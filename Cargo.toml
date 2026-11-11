@@ -1,6 +1,6 @@
 [package]
 name = "ic-auth-client"
-version = "0.6.0-beta.0"
+version = "0.49.0-beta.0"
 authors = ["Inomoto, Yota <yota@perforate.org>"]
 license = "Apache-2.0"
 edition = "2024"
@@ -11,6 +11,13 @@ include = ["/src", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 documentation = "https://docs.rs/ic-auth-client/"
 repository = "https://github.com/perforate-org/ic-auth-client-rs/"
+
+# The `ic-agent` minor this release supports. `scripts/check-agent-compat.sh`
+# keeps the crate version's minor and the dependency in step with it, so that a
+# cargo-visible version bump always means "this pairs with a different ic-agent".
+[package.metadata.ic-agent]
+minor = "0.49"
+tested = "0.49.3"
 
 readme = "README.md"
 

@@ -19,6 +19,14 @@ compile_error!("Either feature \"native\" or \"wasm-js\" must be enabled for thi
 #[macro_use]
 extern crate tracing;
 
+/// The `ic-agent` this crate is built against.
+///
+/// An identity is only usable with an agent from the *same* `ic-agent` crate
+/// instance: another version is another `Identity` trait, and passing this
+/// crate's identity to it does not typecheck. Depend on this re-export rather
+/// than adding `ic-agent` yourself, so that there is exactly one in the tree.
+pub use ic_agent;
+
 pub mod client;
 pub mod key;
 pub mod signer;

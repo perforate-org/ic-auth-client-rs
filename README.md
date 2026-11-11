@@ -10,9 +10,28 @@ the status, sign in or out, and use the identity it hands you with `ic-agent`.
 
 ## Version compatibility for `ic-agent`
 
+This crate implements `ic_agent::Identity` and hands out `ic_agent` types, so it
+must be built against the same `ic-agent` as the application: another version is
+another `Identity` trait, and the identity this crate hands out does not
+typecheck against that agent. Two rules keep that from being a guessing game.
+
+- **Depend on this crate only.** Take `ic-agent` types from the re-export
+  (`ic_auth_client::ic_agent`) instead of adding `ic-agent` to your own
+  `Cargo.toml`. Cargo then resolves one `ic-agent` for the tree, and a mismatch
+  cannot happen.
+- **The minor version names the pairing.** `ic-auth-client 0.49.x` is built for
+  `ic-agent 0.49.*`; our patch releases are fixes within it. A new `ic-agent`
+  minor becomes a new minor here, which is also a cargo-visible breaking bump:
+  with 0.x semantics `ic-auth-client = "0.49"` does not accept `0.50`.
+
+A scheduled CI workflow watches crates.io for new `ic-agent` releases and opens
+the bump (dependency, crate version, changelog and this table, with the full
+test matrix), and `scripts/check-agent-compat.sh` fails the build if the version
+and the dependency ever drift apart.
+
 | `ic-agent` version | `ic-auth-client` version | upstream `@icp-sdk/auth` |
 | ------------------ | ------------------------ | ------------------------ |
-| 0.49.\*            | 0.6.\*                   | 11.x                     |
+| 0.49.\*            | 0.49.\*                   | 11.x                     |
 | 0.45.\*            | 0.5.\*                   | 5.x                      |
 | 0.44.\*            | 0.4.\*                   | 4.x                      |
 | 0.39.\*            | 0.3.\*                   | 3.x                      |
@@ -24,6 +43,10 @@ the status, sign in or out, and use the identity it hands you with `ic-agent`.
 
 ```rust
 use ic_auth_client::client::{AuthClient, AuthClientCreateOptions, SignInOptions};
+// Take `ic-agent` from this crate's re-export: the identity it hands out is an
+// `Identity` for *this* `ic-agent`, and a second copy in the tree is a second
+// trait it would not satisfy.
+use ic_auth_client::ic_agent;
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // A client is a view on stored state: construct it wherever you need it.

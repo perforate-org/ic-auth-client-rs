@@ -152,6 +152,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The UniFFI `AuthIdentity` gained `delegationExpiresAtMs()` for the same reason,
   and the docs say the handle is a snapshot to re-ask for rather than cache.
 
+- The crate version now names the `ic-agent` pairing: `ic-auth-client 0.49.x`
+  is built for `ic-agent 0.49.*`, a new `ic-agent` minor is a new minor here (and
+  therefore a cargo-visible breaking bump under 0.x semantics), and patch
+  releases are fixes within a pairing. `scripts/check-agent-compat.sh` fails the
+  build if the version, `[package.metadata.ic-agent]` and the dependency
+  disagree.
+- `pub use ic_agent` re-exports the agent this crate is built against. An
+  identity is only usable with an agent from the same `ic-agent` instance, so
+  applications should take `ic-agent` types from `ic_auth_client::ic_agent`
+  rather than adding a second copy to their own `Cargo.toml`.
+
 ### Removed
 
 - **BREAKING**: the pre-v11 client. `AuthClient::builder()`,
@@ -254,6 +265,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `StoredKey::CryptoKeyPair` variant the native stores only ever had to
   reject.
 
+- The crate version now names the `ic-agent` pairing: `ic-auth-client 0.49.x`
+  is built for `ic-agent 0.49.*`, a new `ic-agent` minor is a new minor here (and
+  therefore a cargo-visible breaking bump under 0.x semantics), and patch
+  releases are fixes within a pairing. `scripts/check-agent-compat.sh` fails the
+  build if the version, `[package.metadata.ic-agent]` and the dependency
+  disagree.
+- `pub use ic_agent` re-exports the agent this crate is built against. An
+  identity is only usable with an agent from the same `ic-agent` instance, so
+  applications should take `ic-agent` types from `ic_auth_client::ic_agent`
+  rather than adding a second copy to their own `Cargo.toml`.
+
 ### Removed
 
 - Custom `sleep` utility module (replaced by `gloo-timers`)
@@ -342,6 +364,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module, the unused `KEY_STORAGE_DELEGATION`/`KEY_STORAGE_KEY_TYPE` constants
   and the `StoredKey::CryptoKeyPair` variant the native stores only ever had to
   reject.
+
+- The crate version now names the `ic-agent` pairing: `ic-auth-client 0.49.x`
+  is built for `ic-agent 0.49.*`, a new `ic-agent` minor is a new minor here (and
+  therefore a cargo-visible breaking bump under 0.x semantics), and patch
+  releases are fixes within a pairing. `scripts/check-agent-compat.sh` fails the
+  build if the version, `[package.metadata.ic-agent]` and the dependency
+  disagree.
+- `pub use ic_agent` re-exports the agent this crate is built against. An
+  identity is only usable with an agent from the same `ic-agent` instance, so
+  applications should take `ic-agent` types from `ic_auth_client::ic_agent`
+  rather than adding a second copy to their own `Cargo.toml`.
 
 ### Removed
 
