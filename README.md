@@ -8,6 +8,25 @@ The port follows the **v11 model** of the JavaScript library: a sign-in lives in
 storage, and an `AuthClient` is a cheap view on it. Construct one per page, read
 the status, sign in or out, and use the identity it hands you with `ic-agent`.
 
+## Documentation
+
+The crate has two surfaces, and they cannot be built in one documentation pass:
+the browser stores (`wasm-js` --- IndexedDB, localStorage, cookies, the ICRC-29
+and ICRC-167 transports) hold JavaScript handles and are not `Send`, while the
+native surface (`keyring`, `pem`, `android-password`, `webauth`) requires
+`Send + Sync`. Each is documented where it compiles:
+
+| Surface | Where |
+| ------- | ----- |
+| Browser (`wasm-js`), released | [docs.rs](https://docs.rs/ic-auth-client) |
+| Browser (`wasm-js`), main branch | [GitHub Pages: /wasm](https://perforate-org.github.io/ic-auth-client-rs/wasm/ic_auth_client/) |
+| Native (`keyring`, `pem`, `android-password`, `webauth`), main branch | [GitHub Pages: /native](https://perforate-org.github.io/ic-auth-client-rs/native/ic_auth_client/) |
+
+`docs.rs` builds the browser surface because that is the primary one
+(`[package.metadata.docs.rs]` in `Cargo.toml`); the native surface for the main
+branch is published by the `Docs` workflow. Locally, `make doc-wasm` and
+`make doc-native` open each surface in a browser.
+
 ## Version compatibility for `ic-agent`
 
 This crate implements `ic_agent::Identity` and hands out `ic_agent` types, so it

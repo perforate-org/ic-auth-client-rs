@@ -1,0 +1,84 @@
+name: Docs
+
+# The crate has two surfaces, and they cannot be built in one pass: the browser
+# stores are not `Send`, and the native bounds require it. docs.rs builds the
+# browser surface for releases (see `[package.metadata.docs.rs]`); this workflow
+# publishes both surfaces for the main branch, so the native one has a home and
+# the browser one has a stable "main" view.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Native surface
+        run: cargo doc --no-deps --no-default-features --features native,keyring,pem,android-password,tracing
+
+      - name: Browser surface
+        run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo doc --no-deps --target wasm32-unknown-unknown --no-default-features --features wasm-js,tracing
+
+      - name: Assemble the site
+        run: |
+          mkdir -p site/native site/wasm
+          cp -r target/doc/. site/native/
+          cp -r target/wasm32-unknown-unknown/doc/. site/wasm/
+          rm -f site/native/.lock site/wasm/.lock
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>ic-auth-client documentation</title>
+            <style>
+              body { font: 16px/1.6 system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
+              h1 { line-height: 1.2; }
+              a { color: #0b57d0; }
+              li { margin: .4rem 0; }
+              code { background: #f2f2f2; padding: .1rem .3rem; border-radius: .2rem; }
+            </style>
+          </head>
+          <body>
+            <h1>ic-auth-client</h1>
+            <p>The crate has two surfaces, and they cannot be documented in one build:
+              the browser stores are not <code>Send</code>, and the native bounds require it.</p>
+            <ul>
+              <li><a href="https://docs.rs/ic-auth-client">Browser surface, released (docs.rs)</a></li>
+              <li><a href="native/ic_auth_client/">Native surface (<code>keyring</code>, <code>pem</code>, <code>android-password</code>, <code>webauth</code>), main branch</a></li>
+              <li><a href="wasm/ic_auth_client/">Browser surface (<code>wasm-js</code>), main branch</a></li>
+            </ul>
+          </body>
+          </html>
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

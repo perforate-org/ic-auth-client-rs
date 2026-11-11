@@ -14,7 +14,8 @@
 //! There is no native transport: a non-browser client does not speak the
 //! signer protocol at all. It signs in through the identity provider's own
 //! non-browser flow instead, which hands a delegation to a loopback listener
-//! and needs no hosted bridge page --- see [`crate::client::webauth`].
+//! and needs no hosted bridge page --- see `crate::client::webauth` (desktop
+//! native builds).
 
 use std::fmt;
 use std::sync::Arc;

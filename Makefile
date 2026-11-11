@@ -35,8 +35,16 @@ test-firefox:
 test-safari:
 	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack test --safari
 
-doc:
-	RUSTDOCFLAGS='--cfg docsrs' cargo +nightly doc --features keyring,pem,native,tracing,wasm-js --no-deps --open
+# The two surfaces do not compile together (see README "Documentation"), so each
+# is documented on its own. docs.rs builds the browser one for releases; the
+# docs workflow publishes both to GitHub Pages.
+doc: doc-native
+
+doc-native:
+	cargo doc --no-deps --no-default-features --features native,keyring,pem,android-password,tracing --open
+
+doc-wasm:
+	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' cargo doc --no-deps --target wasm32-unknown-unknown --no-default-features --features wasm-js,tracing --open
 
 build-swift:
 	./swift-package/IcAuthClient/build_all.sh

@@ -163,6 +163,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applications should take `ic-agent` types from `ic_auth_client::ic_agent`
   rather than adding a second copy to their own `Cargo.toml`.
 
+- Documentation: docs.rs now builds the browser surface (wasm32, `wasm-js`,
+  `tracing`), which is the primary one, and the new `Docs` workflow publishes
+  both surfaces for the main branch to GitHub Pages (`/wasm`, `/native`) with a
+  landing page. `make doc-wasm` / `make doc-native` do the same locally;
+  `make doc` is the native one. The two surfaces cannot share a build: the
+  browser stores are not `Send`, which the native bounds require.
+
 ### Removed
 
 - **BREAKING**: the pre-v11 client. `AuthClient::builder()`,
@@ -276,6 +283,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applications should take `ic-agent` types from `ic_auth_client::ic_agent`
   rather than adding a second copy to their own `Cargo.toml`.
 
+- Documentation: docs.rs now builds the browser surface (wasm32, `wasm-js`,
+  `tracing`), which is the primary one, and the new `Docs` workflow publishes
+  both surfaces for the main branch to GitHub Pages (`/wasm`, `/native`) with a
+  landing page. `make doc-wasm` / `make doc-native` do the same locally;
+  `make doc` is the native one. The two surfaces cannot share a build: the
+  browser stores are not `Send`, which the native bounds require.
+
 ### Removed
 
 - Custom `sleep` utility module (replaced by `gloo-timers`)
@@ -375,6 +389,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity is only usable with an agent from the same `ic-agent` instance, so
   applications should take `ic-agent` types from `ic_auth_client::ic_agent`
   rather than adding a second copy to their own `Cargo.toml`.
+
+- Documentation: docs.rs now builds the browser surface (wasm32, `wasm-js`,
+  `tracing`), which is the primary one, and the new `Docs` workflow publishes
+  both surfaces for the main branch to GitHub Pages (`/wasm`, `/native`) with a
+  landing page. `make doc-wasm` / `make doc-native` do the same locally;
+  `make doc` is the native one. The two surfaces cannot share a build: the
+  browser stores are not `Send`, which the native bounds require.
 
 ### Removed
 

@@ -158,9 +158,14 @@ panic = "abort"
 wasm-opt = ["-O", "--enable-bulk-memory"]
 
 [package.metadata.docs.rs]
-# Host target, so `native` (and not `wasm-js`: the browser stores are not `Send`
-# on a host target, and the native bound requires it).
-features = ["keyring", "pem", "native", "tracing"]
+# The browser surface is the primary one, so docs.rs builds the wasm target with
+# `wasm-js`. The native surface cannot be built for wasm, and the two do not
+# compile together on one target (the browser stores are not `Send`, which the
+# native bounds require), so it is documented on GitHub Pages instead --- see
+# README "Documentation".
+default-target = "wasm32-unknown-unknown"
+targets = []
+features = ["wasm-js", "tracing"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
