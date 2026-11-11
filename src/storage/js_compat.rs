@@ -237,6 +237,7 @@ impl JsDelegationChain {
                         pubkey,
                         expiration,
                         targets,
+                        permissions: None,
                     },
                     signature,
                 })
@@ -259,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_ed25519_js_roundtrip() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let signing_key = SigningKey::generate(&mut rng);
 
         let js_json = serialize_ed25519_to_js(&signing_key);

@@ -37,8 +37,6 @@ impl From<StoredKey> for StoredKeyRepr {
         match value {
             StoredKey::String(string) => StoredKeyRepr::String(string),
             StoredKey::Raw(bytes) => StoredKeyRepr::Raw(BASE64_STANDARD_NO_PAD.encode(bytes)),
-            #[cfg(feature = "wasm-js")]
-            StoredKey::CryptoKeyPair(_) => StoredKeyRepr::String(String::new()),
         }
     }
 }
