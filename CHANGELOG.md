@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `http://<canister>.localhost:8000` failed with "The signer must be an HTTPS
   URL". The page now uses the browser transport's loopback rule
   (`is_loopback_host`: `localhost`, `*.localhost`, `[::1]`, 127.0.0.0/8), which
-  is also what Internet Identity accepts.
+  is also what Internet Identity accepts. The loopback exemption is HTTP-only:
+  `ftp://localhost` is refused like any other insecure scheme.
 
 ## [0.49.3] - 2026-11-15
 

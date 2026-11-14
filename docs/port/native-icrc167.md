@@ -118,11 +118,13 @@ The pages are stateless apart from `sessionStorage`:
 1. `/auth/` reads `#signer`, `#message`, `#state`, `#callback`, `#port`,
    `#token`, strips the fragment, and refuses a request that is not one
    JSON-RPC object, a signer that is not a secure context, or a callback that is
-   not on its own origin. "Loopback" is the browser transport's set
-   (`is_loopback_host`): `localhost`, `*.localhost`, `[::1]` and 127.0.0.0/8, so
-   a local Internet Identity at `http://<canister>.localhost:8000` is accepted. It stores `{port, token}` under one
-   `sessionStorage` key and `location.replace`s to
-   `<signer>#message=<message>&callback=<callback>&state=<state>`.
+   not on its own origin. A secure context is HTTPS anywhere, or **HTTP** on
+   loopback (`is_secure_context_url`); "loopback" is the browser transport's
+   set (`is_loopback_host`: `localhost`, `*.localhost`, `[::1]`,
+   127.0.0.0/8). A local Internet Identity at
+   `http://<canister>.localhost:8000` is accepted, `ftp://localhost` is not. It
+   stores `{port, token}` under one `sessionStorage` key and `location.replace`s
+   to `<signer>#message=<message>&callback=<callback>&state=<state>`.
 2. `/auth/callback` reads `#message` + `#state`, strips the fragment, POSTs
    `{state, message}` to `http://127.0.0.1:<port>/icrc167` with
    `Authorization: Bearer <token>`, and then **long-polls**

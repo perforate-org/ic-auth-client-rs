@@ -530,6 +530,23 @@ def main() -> int:
         assert "must be an HTTPS URL" in (text or ""), text
         print("PASS  a plain-http signer outside loopback is refused")
 
+        # -- a non-http loopback signer is refused --------------------------
+        driver.get(
+            relay_origin
+            + "/auth/?case=ftp#"
+            + fragment(
+                signer="ftp://127.0.0.1/signer",
+                message=message(),
+                state="state-ftp",
+                callback=relay_origin + "/auth/callback",
+                port="1",
+                token="x",
+            )
+        )
+        text = wait_for_text(driver, "must be an HTTPS URL")
+        assert "must be an HTTPS URL" in (text or ""), text
+        print("PASS  a non-http loopback signer is refused")
+
         # -- a wrong token is not delivered --------------------------------
         captured = Captured()
         LoopbackHandler.captured = captured

@@ -74,8 +74,15 @@
     host.endsWith(".localhost") ||
     host === "[::1]" ||
     /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
-  if (signerUrl.protocol !== "https:" && !isLoopbackHost(signerUrl.hostname)) {
-    return fail("The signer must be an HTTPS URL.");
+  // Secure context, the same rule as the browser transport
+  // (`is_secure_context_url`): HTTPS on any host, or **http** on loopback. Any
+  // other scheme is refused even when the host is loopback, so `ftp://localhost`
+  // does not get the development-signer exemption.
+  const secureContext =
+    signerUrl.protocol === "https:" ||
+    (signerUrl.protocol === "http:" && isLoopbackHost(signerUrl.hostname));
+  if (!secureContext) {
+    return fail("The signer must be an HTTPS URL, or plain HTTP on a loopback host.");
   }
   // The application's callback is on this relay's own origin; anything else
   // would be a different relying party than the one the user sees here.

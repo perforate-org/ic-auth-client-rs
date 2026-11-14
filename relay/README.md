@@ -113,9 +113,10 @@ curl -s https://app.example/.well-known/ii-auth-callbacks
   Firefox, and the pages you deploy are the same. Verified on 2026-11-15:
   Chrome 157, Firefox 158.0.1, Safari 27.2.
 - **Local development signers are allowed.** The signer URL must be a secure
-  context: HTTPS anywhere, or HTTP on loopback (`localhost`, `*.localhost`,
-  `[::1]`, 127.0.0.0/8 --- the same rule as the browser transport). A local
-  Internet Identity at `http://<canister>.localhost:8000` therefore works
-  without a TLS setup.
+  context: HTTPS anywhere, or **HTTP** on loopback (`localhost`, `*.localhost`,
+  `[::1]`, 127.0.0.0/8 --- the same rule as the browser transport). The loopback
+  exemption is HTTP-only, so `ftp://localhost/...` is refused like any other
+  insecure scheme. A local Internet Identity at
+  `http://<canister>.localhost:8000` therefore works without a TLS setup.
 - **Windows may prompt for firewall access** the first time a loopback listener
   is bound.
