@@ -52,9 +52,9 @@
   if (!attempt || !attempt.port || !attempt.token) {
     return fail("This sign-in did not start in this tab.");
   }
-  if (attempt.expectedState !== state) {
-    return fail("The signer answered a request this tab is not waiting for.");
-  }
+  // The state is not matched here: each step gets its own, and the loopback
+  // listener refuses a state it is not waiting for (409), which is the
+  // authority for a hand-off step too.
 
   const base = "http://127.0.0.1:" + encodeURIComponent(attempt.port);
   const authorization = "Bearer " + attempt.token;
@@ -76,8 +76,6 @@
       }
       const body = await response.json();
       if (body.next) {
-        attempt.expectedState = body.next.state;
-        sessionStorage.setItem(ATTEMPT, JSON.stringify(attempt));
         const target = new URL(body.next.signer);
         target.hash = new URLSearchParams({
           message: body.next.message,
@@ -114,7 +112,17 @@
       return next();
     })
     .catch(() => {
-      fail("The application is not listening; return to it and try again.");
+      // Safari blocks an https page from reading http://127.0.0.1 (mixed
+      // content), but a top-level navigation to loopback is allowed: hand the
+      // answer to the page the listener serves, which posts it same-origin and
+      // can still continue the ceremony.
+      const target = new URL(base + "/icrc167/handoff");
+      target.hash = new URLSearchParams({
+        state,
+        message,
+        token: attempt.token,
+      }).toString();
+      location.replace(target.toString());
     });
 })();
 </script>

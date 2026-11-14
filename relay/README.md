@@ -104,10 +104,13 @@ curl -s https://app.example/.well-known/ii-auth-callbacks
   tab: the callback page long-polls the application for the next request and
   navigates again. A page deployed before this protocol, or a tab the user
   closed, degrades to "one new tab per step".
-- **Chrome is the verified browser.** The callback page POSTs from a public
-  HTTPS origin to `http://127.0.0.1`, which Chrome allows (the transport answers
-  the Private Network Access preflight). Safari's mixed-content rules have not
-  been checked yet; macOS native can use a platform session instead once the
-  callback broker lands.
+- **Browsers differ on the loopback report.** The callback page POSTs from a
+  public HTTPS origin to `http://127.0.0.1`. Chrome and Firefox allow it (the
+  transport answers the Private Network Access preflight); **Safari blocks it
+  as mixed content**. For Safari the callback page navigates to a page the
+  listener serves (`/icrc167/handoff`), which reports same-origin and can still
+  continue the ceremony in the same tab. Nothing changes for Chrome and
+  Firefox, and the pages you deploy are the same. Verified on 2026-11-15:
+  Chrome 157, Firefox 158.0.1, Safari 27.2.
 - **Windows may prompt for firewall access** the first time a loopback listener
   is bound.

@@ -32,6 +32,26 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_DRIVER = "/tmp/chromedriver-157/chromedriver-mac-arm64/chromedriver"
 DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
+# The hand-off page ships inside the listener (`include_str!`), so the self-test
+# serves the crate's own copy. Duplicating it here would let the two drift.
+HANDOFF_PAGE = HERE.parent / "src" / "client" / "transport" / "handoff.html"
+
+SAFARI_STUB = """<script>
+// Stand in for Safari, which refuses an https page reading http://127.0.0.1.
+const realFetch = window.fetch;
+window.fetch = (input, init) =>
+  String(input).startsWith("http://127.0.0.1")
+    ? Promise.reject(new TypeError("Load failed"))
+    : realFetch(input, init);
+</script>"""
+
+
+def safari_callback_html() -> bytes:
+    """The callback page as Safari runs it: its loopback fetch fails."""
+    document = (HERE / "auth" / "callback.html").read_text()
+    return document.replace("<body>", "<body>" + SAFARI_STUB, 1).encode()
+
+
 FAKE_SIGNER = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Fake signer</title></head>
 <body><p id="status">signing…</p><script>
@@ -97,8 +117,11 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path in ("/auth/callback", "/auth/callback.html"):
             self.respond(HTTPStatus.OK, (HERE / "auth" / "callback.html").read_bytes(), "text/html; charset=utf-8")
             return
+        if path in ("/auth/callback-safari", "/auth/callback-safari.html"):
+            self.respond(HTTPStatus.OK, safari_callback_html(), "text/html; charset=utf-8")
+            return
         if path == "/.well-known/ii-auth-callbacks":
-            document = {"callbacks": [self.origin + "/auth/callback"]}
+            document = {"callbacks": [self.origin + "/auth/callback", self.origin + "/auth/callback-safari"]}
             self.respond(HTTPStatus.OK, json.dumps(document).encode(), "application/json", cors=True)
             return
         if path == "/fake-signer":
@@ -161,6 +184,16 @@ class LoopbackHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - http.server API
         capture = type(self).captured
         authorization = self.headers.get("Authorization")
+        if self.path.split("?")[0] == "/icrc167/handoff":
+            # No credentials: the token is in the fragment, and the page is static.
+            body = HANDOFF_PAGE.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.add_headers()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path != "/icrc167/poll":
             status, document = HTTPStatus.NOT_FOUND, {"error": "not found"}
         elif authorization != "Bearer " + type(self).token:
@@ -370,6 +403,47 @@ def main() -> int:
         captured_url = driver.url()
         assert captured_url.startswith(relay_origin + "/auth/callback"), captured_url
         print("PASS  a second step navigated the same tab (long-poll continuation)")
+        LoopbackHandler.script = []
+
+        # -- Safari: the page cannot read loopback, so it navigates ----------
+        # Safari refuses an https page reading http://127.0.0.1. The callback
+        # page hands the answer to the listener-served page by navigation
+        # instead, which posts same-origin and continues the ceremony.
+        captured = Captured()
+        LoopbackHandler.captured = captured
+        LoopbackHandler.token = "token-safari-" + str(int(time.time() * 1_000_000))
+        LoopbackHandler.script = [
+            {
+                "signer": relay_origin + "/fake-signer",
+                "message": message("safari-2"),
+                "state": "state-safari-2",
+                "callback": relay_origin + "/auth/callback-safari",
+            }
+        ]
+        driver.get(
+            relay_origin
+            + "/auth/?case=safari#"
+            + fragment(
+                signer=relay_origin + "/fake-signer",
+                message=message("safari-1"),
+                callback=relay_origin + "/auth/callback-safari",
+                port=loopback_port,
+                token=LoopbackHandler.token,
+                state="state-safari",
+            )
+        )
+        deadline = time.monotonic() + 30
+        while len(captured.payloads) < 2 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert len(captured.payloads) == 2, captured.payloads
+        assert captured.payloads[0]["state"] == "state-safari", captured.payloads
+        assert captured.payloads[1]["state"] == "state-safari-2", captured.payloads
+        text = wait_for_text(driver, "Done")
+        assert "Done" in (text or ""), text
+        assert driver.url().startswith(
+            f"http://127.0.0.1:{loopback_port}/icrc167/handoff"
+        ), driver.url()
+        print("PASS  a browser that cannot read loopback hands off to the served page")
         LoopbackHandler.script = []
 
         # -- the callback must be on the relay's origin --------------------

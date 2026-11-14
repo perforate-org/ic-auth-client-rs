@@ -298,6 +298,10 @@ let identity = client.sign_in(Default::default()).await?;
   a public HTTPS origin and keeping the principal identical to the web sign-in.
 - The identity provider validates the callback declaration and the derivation
   origin, so the relay cannot be used to sign a user in as somebody else's app.
+- Chrome and Firefox report the answer straight to the loopback listener. Safari
+  blocks an https page from reading `http://127.0.0.1`, so the callback page
+  navigates to a page the listener serves instead, which reports same-origin;
+  the ceremony still keeps one tab, and the pages deploy unchanged.
 - Without `native_relay` the client keeps using the flow above, which needs no
   domain. Desktop only: mobile needs a platform callback session
   (ASWebAuthenticationSession / App Links), which is not implemented yet.
