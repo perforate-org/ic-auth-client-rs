@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.1] - 2026-11-14
+
+### Changed
+
+- Dependency version requirements are floors rather than the versions this crate
+  happened to be developed against: `thiserror = "2"`, `serde = "1"`,
+  `serde_json = "1"`, `base64 = "0.23"`, `bon = "3"`, `ed25519-dalek = "3"`,
+  `rand = "0.10"`, `web-sys = "0.3"`, `uniffi = "0.32"` and the rest of the
+  non-crypto stack. An application is no longer forced onto, say,
+  `thiserror 2.0.21` --- which mattered in practice: `pocket-ic 16.1` pins
+  `thiserror = 2.0.18`, so the previous requirement made the two impossible to
+  use in one workspace. `ic-agent` (the pairing) and the RustCrypto generation
+  it needs are relaxed to their minor (`"0.49"`, `"0.13"`, `"0.10"`), and
+  `keyring` to `"4.1"` --- its test helper now triggers the platform store
+  through `Entry::new` rather than the `4.2`-only `store_status`.
+- `scripts/bump-ic-agent.sh` keeps the dependency floor on `ic-agent`'s minor
+  and records the patch it verifies in `[package.metadata.ic-agent] tested`, so
+  a follow-up patch release does not force applications onto that patch.
+
 ## [0.49.0] - 2026-11-12
 
 ### Security
@@ -178,6 +197,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `make doc` is the native one. The two surfaces cannot share a build: the
   browser stores are not `Send`, which the native bounds require.
 
+- Dependency version requirements are now floors rather than the versions this
+  crate happened to be developed against: `thiserror = "2"`, `serde = "1"`,
+  `serde_json = "1"`, `base64 = "0.23"`, `bon = "3"`, `ed25519-dalek = "3"`,
+  `rand = "0.10"`, `web-sys = "0.3"`, `uniffi = "0.32"` and the rest of the
+  non-crypto stack. An application is no longer forced onto, say,
+  `thiserror 2.0.21` --- which mattered in practice: `pocket-ic 16.1` pins
+  `thiserror = 2.0.18`, so the previous requirement made the two impossible to
+  use in one workspace. `ic-agent` (the pairing) and the RustCrypto generation
+  it needs are relaxed to their minor (`"0.49"`, `"0.13"`, `"0.10"`), and
+  `keyring` to `"4.1"` --- its test helper now triggers the platform store
+  through `Entry::new` rather than the `4.2`-only `store_status`.
+
 ### Removed
 
 - **BREAKING**: the pre-v11 client. `AuthClient::builder()`,
@@ -208,6 +239,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The IndexedDB credential store reads its records back again. `CryptoKeyPair` is
+  a WebIDL dictionary, so `JsCast` refused the pair that came back from
+  IndexedDB and every stored credential read as absent --- a page reload
+  re-signed in and signing out could not revoke the session. `p256::key_pair_from_value`
+  builds the pair from `privateKey`/`publicKey` when the cast refuses.
 - Handle JS Ed25519 key-length variants during format detection.
 - Temporarily increased the auth popup height for II 2.0.
 

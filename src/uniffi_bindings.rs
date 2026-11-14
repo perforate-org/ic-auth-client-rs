@@ -29,9 +29,11 @@ use crate::client::{
 pub fn enable_keyring_mock() {
     // `keyring` 4 initialises its platform store lazily on the first `Entry::new`
     // call and installs it as the `keyring-core` default store. Force that
-    // initialisation first, then replace the default store with the in-memory
-    // mock so entries created afterwards stay off the real OS keychain.
-    let _ = keyring::Entry::store_status();
+    // initialisation first --- through `Entry::new` rather than the later
+    // `store_status`, so this keeps working across keyring 4.x --- then replace
+    // the default store with the in-memory mock so entries created afterwards
+    // stay off the real OS keychain.
+    let _ = keyring::Entry::new("ic-auth-client", "keyring-mock");
     keyring_core::set_default_store(
         keyring_core::mock::Store::new().expect("failed to create mock credential store"),
     );
