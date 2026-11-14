@@ -71,6 +71,8 @@ struct Settings {
     sso_domain: Option<String>,
     /// The IC host the agent uses for canister calls.
     host: String,
+    /// The relay page a native sign-in runs through, where configured.
+    native_relay: Option<crate::client::options::NativeRelayOptions>,
 }
 
 impl Settings {
@@ -91,6 +93,7 @@ impl Settings {
                 .host
                 .clone()
                 .unwrap_or_else(|| "https://icp-api.io".to_string()),
+            native_relay: options.native_relay.clone(),
         })
     }
 }
@@ -335,7 +338,7 @@ impl AuthClient {
         let slots = Arc::new(slots_for(options.namespace.as_deref()));
         let settings = Arc::new(Settings::from_options(&options, state_storage.resumable())?);
 
-        let transport = default_transport(&settings);
+        let transport = default_transport(&settings)?;
         let mut client = Self {
             inner: Arc::new(Inner::default()),
             options: Arc::new(options),
@@ -1759,14 +1762,51 @@ fn default_state_storage() -> SharedStateStorage {
 /// without one still answers for stored state and reports
 /// [`AuthClientError::Unsupported`] from the methods that need a signer.
 #[cfg(feature = "wasm-js")]
-fn default_transport(_settings: &Settings) -> Option<SharedTransport> {
-    None
+fn default_transport(settings: &Settings) -> Result<Option<SharedTransport>, AuthClientError> {
+    if settings.native_relay.is_some() {
+        return Err(AuthClientError::InvalidOptions(
+            "native_relay is for native desktop builds; the browser uses the window or redirect transport"
+                .to_string(),
+        ));
+    }
+    Ok(None)
 }
 
 /// The signer transport this platform uses.
+/// The signer transport this platform uses: the native ICRC-167 URL transport
+/// when the application configured a relay page, and none otherwise (a client
+/// without one still signs in through the provider's non-browser flow).
 #[cfg(all(not(feature = "wasm-js"), feature = "native"))]
-fn default_transport(_settings: &Settings) -> Option<SharedTransport> {
-    None
+fn default_transport(settings: &Settings) -> Result<Option<SharedTransport>, AuthClientError> {
+    let Some(relay) = settings.native_relay.as_ref() else {
+        return Ok(None);
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        let mut options = crate::client::transport::native_url::NativeUrlTransportOptions::new(
+            settings.provider.authorize_url.clone(),
+            relay.relay_origin.trim_end_matches('/'),
+        );
+        if let Some(page) = relay.relay_page.as_ref() {
+            options.relay_page = page.clone();
+        }
+        if let Some(callback) = relay.relay_callback.as_ref() {
+            options.relay_callback = callback.clone();
+        }
+        if let Some(timeout_ms) = relay.timeout_ms {
+            options.timeout = std::time::Duration::from_millis(timeout_ms);
+        }
+        let transport = crate::client::transport::native_url::NativeUrlTransport::new(options)
+            .map_err(|error| AuthClientError::InvalidOptions(error.to_string()))?;
+        Ok(Some(Arc::new(transport) as SharedTransport))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        Err(AuthClientError::InvalidOptions(
+            "native_relay is for desktop builds; a mobile app needs a platform callback broker (ASWebAuthenticationSession or App Links)"
+                .to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -1830,6 +1870,91 @@ mod tests {
         let url = build_authorize_url(&options, &IdentityProvider::default(), false).unwrap();
         assert!(url.contains("sso=example.com"));
         assert!(url.contains("derivationOrigin=https%3A%2F%2Fexample.com"));
+    }
+
+    #[test]
+    fn native_relay_and_redirect_mode_are_rejected() {
+        let options = AuthClientCreateOptions {
+            transport: Some(crate::client::options::TransportMode::Redirect),
+            native_relay: Some(crate::client::options::NativeRelayOptions {
+                relay_origin: "https://app.example".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            AuthClient::new(options),
+            Err(AuthClientError::InvalidOptions(_))
+        ));
+    }
+
+    #[cfg(all(
+        feature = "native",
+        not(feature = "wasm-js"),
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    fn relay_client(relay_origin: &str) -> Result<AuthClient, AuthClientError> {
+        AuthClient::new(AuthClientCreateOptions {
+            credential_storage: Some(Arc::new(MemoryCredentialStorage::new(BaseKeyType::Ed25519))),
+            state_storage: Some(Arc::new(MemoryStateStorage::new())),
+            native_relay: Some(crate::client::options::NativeRelayOptions {
+                relay_origin: relay_origin.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(all(
+        feature = "native",
+        not(feature = "wasm-js"),
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    #[test]
+    fn a_native_relay_builds_the_url_transport() {
+        let client = relay_client("https://app.example").expect("client");
+        assert!(
+            client.transport().is_some(),
+            "a configured relay is the signer transport"
+        );
+    }
+
+    #[cfg(all(
+        feature = "native",
+        not(feature = "wasm-js"),
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    #[test]
+    fn a_relay_origin_must_be_a_secure_bare_origin() {
+        assert!(matches!(
+            relay_client("http://app.example"),
+            Err(AuthClientError::InvalidOptions(_))
+        ));
+        assert!(matches!(
+            relay_client("https://app.example/auth"),
+            Err(AuthClientError::InvalidOptions(_))
+        ));
+        // The development exception is a loopback origin.
+        assert!(relay_client("http://127.0.0.1:8787").is_ok());
+    }
+
+    #[cfg(all(
+        feature = "native",
+        not(feature = "wasm-js"),
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    #[test]
+    fn without_a_relay_native_keeps_the_non_browser_flow() {
+        let client = AuthClient::new(AuthClientCreateOptions {
+            credential_storage: Some(Arc::new(MemoryCredentialStorage::new(BaseKeyType::Ed25519))),
+            state_storage: Some(Arc::new(MemoryStateStorage::new())),
+            ..Default::default()
+        })
+        .expect("client");
+        assert!(
+            client.transport().is_none(),
+            "no relay means the non-browser (CLI) flow still answers sign-in"
+        );
     }
 
     #[test]

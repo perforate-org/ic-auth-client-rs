@@ -188,6 +188,43 @@ pub struct AuthClientCreateOptions {
     /// Organization domain for one-click SSO sign-in. Mutually exclusive with
     /// [`AuthClientCreateOptions::open_id_provider`].
     pub sso_domain: Option<String>,
+
+    /// Sign in over ICRC-167 through a relay page this application hosts on its
+    /// own origin, instead of through the identity provider's non-browser flow.
+    ///
+    /// Desktop native only (`native`, not `wasm-js`, macOS/Linux/Windows);
+    /// ignored by the browser build, and refused by mobile native builds, where
+    /// the callback has to be delivered by a platform session instead.
+    pub native_relay: Option<NativeRelayOptions>,
+}
+
+/// Where the native ICRC-167 sign-in runs.
+///
+/// The application hosts two static pages on its own origin: the relay page
+/// (which carries the request to the signer) and the callback (which the signer
+/// navigates back to). The origin's root must also serve
+/// `/.well-known/ii-auth-callbacks` declaring the callback, because the signer
+/// only answers callbacks a relying party declared.
+///
+/// Hosting them on the application's own origin is not incidental: the relying
+/// party origin is what the signer derives the principal from, so a relay page
+/// on somebody else's domain would sign the user in as a different identity
+/// than the same application's web sign-in.
+#[derive(Debug, Clone, Default, bon::Builder)]
+pub struct NativeRelayOptions {
+    /// The origin that hosts the relay page and the callback, for example
+    /// `https://app.example`. Bare origin: no path, query or fragment.
+    pub relay_origin: String,
+
+    /// The relay page's path on that origin. Defaults to `/auth/`.
+    pub relay_page: Option<String>,
+
+    /// The callback's path on that origin. Defaults to `/auth/callback`.
+    pub relay_callback: Option<String>,
+
+    /// How long a whole navigation may take, in milliseconds. Defaults to the
+    /// transport's 10 minutes.
+    pub timeout_ms: Option<u64>,
 }
 
 impl AuthClientCreateOptions {
@@ -206,6 +243,15 @@ impl AuthClientCreateOptions {
         if self.open_id_provider.is_some() && self.sso_domain.is_some() {
             return Err(AuthClientError::InvalidOptions(
                 "open_id_provider and sso_domain are mutually exclusive".to_string(),
+            ));
+        }
+        if self.native_relay.is_some() && self.transport == Some(TransportMode::Redirect) {
+            // The native transport is one navigation per request and has no
+            // page journal; the redirect mode's return-load replay has nothing
+            // to read there.
+            return Err(AuthClientError::InvalidOptions(
+                "native_relay replaces the transport: do not also select the redirect transport mode"
+                    .to_string(),
             ));
         }
         Ok(())

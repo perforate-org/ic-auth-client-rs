@@ -137,13 +137,15 @@ Opt-in, native only, additive:
 ```rust
 // client/options.rs
 pub struct NativeRelayOptions {
-    /// Origin that hosts the relay page, e.g. "https://app.example".
+    /// Bare origin that hosts the relay page, e.g. "https://app.example".
     /// The page lives at `<relay_origin>/auth/`, the callback at
     /// `<relay_origin>/auth/callback`, the allow-list at the origin root.
     pub relay_origin: String,
     /// Optional override for a page served from a sub-path.
     pub relay_page: Option<String>,
-    /// Whole-navigation deadline; defaults to the existing 600 s flow timeout.
+    /// Optional override for the callback path.
+    pub relay_callback: Option<String>,
+    /// Whole-navigation deadline; defaults to 600 s.
     pub timeout_ms: Option<u64>,
 }
 
@@ -155,18 +157,29 @@ pub struct AuthClientCreateOptions {
 }
 ```
 
+`NativeRelayOptions` has a `bon` builder, and the field is additive: existing
+callers using `..Default::default()` or the builder are unaffected; a struct
+literal that names every field has to add `..Default::default()`.
+
+Dispatch: `default_transport` returns `Some(NativeUrlTransport::new(..)?)` when
+`native_relay` is set (and `None` otherwise), so the existing
+`transport.is_none()` -> `webauth` branch keeps answering for applications
+without a relay, and the signer path answers for those with one. No `sign_in`
+signature change.
+
+Validation is the transport's, surfaced as `AuthClientError::InvalidOptions`:
+insecure or non-bare origins, fragment-bearing signer URLs, unsafe paths, and
+the `native_relay` + `TransportMode::Redirect` combination (the redirect mode's
+return-load replay has no page journal on native) are all refused at
+`AuthClient::new`.
+
 `AuthClient::with_transport` stays the injection point for tests and for mobile
-brokers. No `sign_in` signature change.
+brokers, and it overrides the relay.
 
-Dispatch in `sign_in` needs almost nothing new: `default_transport(settings)`
-(`auth_client.rs:1752`) currently returns `None` on native. It returns
-`Some(NativeUrlTransport::new(options)?)` when `native_relay` is set, and the
-existing native branch (`transport.is_none()` -> `webauth`) then falls through to
-the signer path automatically. `webauth` remains reachable by leaving
-`native_relay` unset.
-
-UniFFI: one `record NativeRelayOptions` and the field on the create-options
-record; the blocking `login` wrapper then chooses the path the same way.
+UniFFI/mobile: the relay is fixed at client creation and the generated
+constructors do not carry it yet, so the UniFFI surface keeps using the
+non-browser flow. Mobile delivery (ASWebAuthenticationSession / App Links) is
+phase 6, with its own constructor and `CallbackBroker` implementation.
 
 ## 5. Rotation and lifecycle on native
 
