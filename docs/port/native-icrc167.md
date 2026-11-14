@@ -117,8 +117,10 @@ The pages are stateless apart from `sessionStorage`:
 
 1. `/auth/` reads `#signer`, `#message`, `#state`, `#callback`, `#port`,
    `#token`, strips the fragment, and refuses a request that is not one
-   JSON-RPC object, a signer that is not HTTPS (or loopback), or a callback that
-   is not on its own origin. It stores `{port, token}` under one
+   JSON-RPC object, a signer that is not a secure context, or a callback that is
+   not on its own origin. "Loopback" is the browser transport's set
+   (`is_loopback_host`): `localhost`, `*.localhost`, `[::1]` and 127.0.0.0/8, so
+   a local Internet Identity at `http://<canister>.localhost:8000` is accepted. It stores `{port, token}` under one
    `sessionStorage` key and `location.replace`s to
    `<signer>#message=<message>&callback=<callback>&state=<state>`.
 2. `/auth/callback` reads `#message` + `#state`, strips the fragment, POSTs
@@ -342,7 +344,8 @@ have no verified hand-off.
 
 Phases 1--5 are implemented: the transport, the `native_relay` option, the
 deployable pages in [`relay/`](../../relay/README.md) with a headless-browser
-self-test (`relay/selftest.py`, 7 checks, including the Safari hand-off) and
+self-test (`relay/selftest.py`, 9 checks, including the Safari hand-off
+and local-development signers) and
 [`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md),
 native rotation through a platform executor (§5), and the long-poll continuation
 that keeps one browser tab for a multi-step ceremony (§3). Browser behaviour was
