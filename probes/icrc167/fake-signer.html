@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICRC-167 probe - fake signer</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.55 system-ui, -apple-system, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+    pre { background: #f4f4f5; padding: .7rem; border-radius: .4rem; overflow-x: auto; font-size: 12.5px; }
+    .ok { color: #0a7a2f; font-weight: 600; }
+    .bad { color: #b3261e; font-weight: 600; }
+    .pending { color: #555; }
+  </style>
+</head>
+<body>
+<h1>Fake signer</h1>
+<p class="lede">
+  Mimics the parts of the signer that matter for the transport: read the
+  fragment, validate the callback against the declared allow-list, answer the
+  batch, and navigate back. It never touches Internet Identity.
+</p>
+<p id="status" class="pending">reading the request...</p>
+<pre id="detail" hidden></pre>
+<script type="module">
+import { encodeFragment, fromBase64, parseFragment, toBase64 } from "./icrc167.js";
+
+const status = document.getElementById("status");
+const detail = document.getElementById("detail");
+const reject = new URLSearchParams(location.search).get("reject") === "1";
+
+function fail(message, extra) {
+  status.className = "bad";
+  status.textContent = message;
+  if (extra !== undefined) {
+    detail.hidden = false;
+    detail.textContent = JSON.stringify(extra, null, 2);
+  }
+}
+
+/** 64 zero bytes, standing in for a real signature (shape only). */
+function fakeSignature() {
+  return toBase64(new Uint8Array(64));
+}
+
+function expirationNs() {
+  return String(BigInt(Date.now() + 8 * 60 * 60 * 1000) * 1_000_000n);
+}
+
+function delegationResponse(id, leaf) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      // A real chain's publicKey is the root (the user's identity key); shape
+      // is all the probe checks, so the leaf stands in for it.
+      publicKey: leaf,
+      signerDelegation: [
+        {
+          delegation: { pubkey: leaf, expiration: expirationNs() },
+          signature: fakeSignature(),
+        },
+      ],
+    },
+  };
+}
+
+function errorResponse(id, code, message) {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+function answer(request, callbackOrigin) {
+  const params = request.params || {};
+  if (reject) {
+    return errorResponse(request.id, 3001, "PROBE: fake signer rejected on purpose");
+  }
+  if (
+    typeof params.icrc95DerivationOrigin === "string" &&
+    new URL(params.icrc95DerivationOrigin).origin !== callbackOrigin
+  ) {
+    // A real signer validates the derivation origin against
+    // /.well-known/ii-alternative-origins on that origin and fails closed.
+    return errorResponse(
+      request.id,
+      3001,
+      "PROBE: fake signer does not honour a foreign derivation origin",
+    );
+  }
+  switch (request.method) {
+    case "icrc34_delegation":
+      if (typeof params.publicKey !== "string") {
+        return errorResponse(request.id, 1000, "PROBE: missing publicKey");
+      }
+      return delegationResponse(request.id, params.publicKey);
+    case "ii_session_delegation":
+      if (typeof params.sessionPublicKey !== "string") {
+        return errorResponse(request.id, 1000, "PROBE: missing sessionPublicKey");
+      }
+      return delegationResponse(request.id, params.sessionPublicKey);
+    case "icrc27_accounts":
+      return { jsonrpc: "2.0", id: request.id, result: { accounts: [] } };
+    default:
+      return errorResponse(request.id, 1000, `PROBE: unknown method ${request.method}`);
+  }
+}
+
+async function main() {
+  const fragment = parseFragment(location.hash);
+  if (fragment.message === null) {
+    fail("no message in the fragment: this is not a transport request");
+    return;
+  }
+  let message;
+  try {
+    message = JSON.parse(fragment.message);
+  } catch (error) {
+    fail(`message is not JSON: ${error}`);
+    return;
+  }
+  const callback = new URLSearchParams(location.hash.slice(1)).get("callback");
+  if (!callback) {
+    fail("no callback in the fragment");
+    return;
+  }
+
+  // The signer learns the relying-party origin from the callback and may only
+  // answer a callback that origin declares.
+  const callbackUrl = new URL(callback);
+  const allowListUrl = new URL("/.well-known/ii-auth-callbacks", callbackUrl.origin);
+  let allowList;
+  try {
+    const response = await fetch(allowListUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    allowList = await response.json();
+  } catch (error) {
+    fail(`could not read the allow-list at ${allowListUrl}: ${error}`, {
+      callback,
+      note: "Internet Identity fails closed here: no response is delivered.",
+    });
+    return;
+  }
+  const declared = Array.isArray(allowList.callbacks) ? allowList.callbacks : [];
+  if (!declared.includes(callback)) {
+    fail("the callback is not byte-for-byte in the allow-list; refusing to answer", {
+      callback,
+      declared,
+    });
+    return;
+  }
+
+  const requests = Array.isArray(message) ? message : [message];
+  const responses = requests.map((request) => answer(request, callbackUrl.origin));
+  const returned = Array.isArray(message) ? responses : responses[0];
+  const next = new URL(callback);
+  next.hash = encodeFragment({
+    message: JSON.stringify(returned),
+    state: fragment.state,
+  });
+  status.className = "ok";
+  status.textContent = `allow-list ok; answering ${requests.length} request(s) and navigating back`;
+  detail.hidden = false;
+  detail.textContent = JSON.stringify({ requests, responses, next: next.toString() }, null, 2);
+  setTimeout(() => location.replace(next.toString()), 40);
+
+  // `fromBase64` is imported for symmetry with the crate's strict decoding; a
+  // malformed key in a request would be a real failure, so surface it early.
+  for (const request of requests) {
+    const leaf = (request.params || {}).publicKey || (request.params || {}).sessionPublicKey;
+    if (leaf) {
+      try {
+        fromBase64(leaf);
+      } catch (error) {
+        fail(`request key is not standard base64: ${error}`);
+        return;
+      }
+    }
+  }
+}
+
+main();
+</script>
+</body>
+</html>

@@ -65,3 +65,9 @@ clean:
 
 clean-example-builds:
 	find examples -type d \( -name target -o -name .dfx -o -name dist \) -prune -exec rm -rf {} +
+
+# The ICRC-167 native probe (see probes/icrc167/README.md for the real run, which
+# needs a browser and a public HTTPS callback origin). This only runs the
+# protocol helpers; the browser flow is exercised by browser-selftest.py.
+probe-test:
+	node --test probes/icrc167/selftest.mjs

@@ -36,3 +36,7 @@ log/
 
 # OS
 .DS_Store
+
+# ICRC-167 probe: recorded runs, tunnel hosts and downloaded drivers are local
+probes/**/results*.json
+probes/**/*.local.json

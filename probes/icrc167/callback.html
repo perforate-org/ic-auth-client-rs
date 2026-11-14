@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICRC-167 probe - callback</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.55 system-ui, -apple-system, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+    pre { background: #f4f4f5; padding: .7rem; border-radius: .4rem; overflow-x: auto; font-size: 12.5px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .ok { color: #0a7a2f; font-weight: 600; }
+    .bad { color: #b3261e; font-weight: 600; }
+    .pending { color: #555; }
+  </style>
+</head>
+<body>
+<h1>Callback</h1>
+<p id="status" class="pending">reading the fragment...</p>
+<pre id="detail" hidden></pre>
+<p><a id="back" href="/">Back to the probe</a></p>
+<script type="module">
+import { PROBE_SCHEMA, inspectMessage, parseFragment } from "./icrc167.js";
+
+const STORAGE = {
+  config: "icrc167-probe/config",
+  pending: "icrc167-probe/pending",
+  results: "icrc167-probe/results",
+};
+
+function readJson(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const status = document.getElementById("status");
+const detail = document.getElementById("detail");
+
+// The fragment never reaches a server; read it and take it out of history so
+// it cannot leak through bookmarks or the referrer.
+const fragment = parseFragment(location.hash);
+if (fragment.message !== null) {
+  history.replaceState(null, "", location.pathname + location.search);
+}
+
+const config = readJson(STORAGE.config, {});
+const pending = readJson(STORAGE.pending, null);
+const results = readJson(STORAGE.results, []);
+
+if (fragment.message === null) {
+  // A signer-initiated navigation, or a signer that completed the interaction
+  // without answering (a batch it does not support lands here). Record it so
+  // the probe shows an outcome instead of waiting forever.
+  if (pending) {
+    results.push({
+      schema: PROBE_SCHEMA,
+      experiment: pending.experiment,
+      recordedAt: new Date().toISOString(),
+      status: "no-message",
+      request: pending.request,
+      http: {
+        callback: location.origin + location.pathname,
+        state: fragment.state,
+        pendingState: pending.state,
+      },
+      checks: { error: "the callback was loaded without a message" },
+      response: null,
+      responseRaw: null,
+    });
+    sessionStorage.setItem(STORAGE.results, JSON.stringify(results));
+    sessionStorage.removeItem(STORAGE.pending);
+  }
+  status.className = "bad";
+  status.textContent = "loaded without a message: the signer completed without answering";
+} else {
+  let parsed;
+  let parseError;
+  try {
+    parsed = JSON.parse(fragment.message);
+  } catch (error) {
+    parseError = String(error);
+  }
+
+  const expectedLeaf = pending && pending.publicKey;
+  const expectedIds = pending
+    ? (Array.isArray(pending.request) ? pending.request : [pending.request]).map(
+        (request) => request.id,
+      )
+    : [];
+  const recorded = {
+    schema: PROBE_SCHEMA,
+    experiment: pending ? pending.experiment : `orphan:${fragment.state ?? "no-state"}`,
+    recordedAt: new Date().toISOString(),
+    status: parseError ? "unparseable" : "response",
+    request: pending ? pending.request : null,
+    http: {
+      callback: location.origin + location.pathname,
+      state: fragment.state,
+      pendingState: pending ? pending.state : null,
+    },
+    checks: parseError
+      ? { error: parseError }
+      : {
+          stateMatches: pending ? fragment.state === pending.state : undefined,
+          ...inspectMessage(parsed, expectedLeaf, expectedIds),
+        },
+    response: parseError ? fragment.message : parsed,
+    responseRaw: fragment.message,
+  };
+
+  results.push(recorded);
+  sessionStorage.setItem(STORAGE.results, JSON.stringify(results));
+  sessionStorage.removeItem(STORAGE.pending);
+
+  if (parseError) {
+    status.className = "bad";
+    status.textContent = `the returned message is not JSON: ${parseError}`;
+  } else if (!pending) {
+    status.className = "bad";
+    status.textContent =
+      "there is no pending request in this tab: it was recorded, but the state cannot be checked";
+  } else if (!recorded.checks.stateMatches) {
+    status.className = "bad";
+    status.textContent = `state mismatch: got ${fragment.state}, expected ${pending.state}`;
+  } else {
+    status.className = "ok";
+    status.textContent = `recorded ${recorded.experiment}; returning to the probe`;
+  }
+  detail.hidden = false;
+  detail.textContent = JSON.stringify(recorded, null, 2);
+}
+
+document.getElementById("back").addEventListener("click", (event) => {
+  event.preventDefault();
+  location.replace("/");
+});
+
+// The probe drives one navigation per experiment; returning immediately keeps
+// "run all" usable and the header readout is enough to follow along.
+setTimeout(() => location.replace("/"), config.selftest ? 60 : 1500);
+</script>
+</body>
+</html>
