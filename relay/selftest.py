@@ -220,8 +220,10 @@ class LoopbackHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Private-Network", "true")
 
 
-def serve(handler: type[BaseHTTPRequestHandler], port: int = 0) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+def serve(
+    handler: type[BaseHTTPRequestHandler], port: int = 0, host: str = "127.0.0.1"
+) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -485,6 +487,48 @@ def main() -> int:
         text = wait_for_text(driver, "opened by the application")
         assert "opened by the application" in (text or ""), text
         print("PASS  a hand-opened relay page explains itself")
+
+        # -- a local Internet Identity is accepted as a signer --------------
+        # `http://<canister>.localhost:8000` is what `dfx start` serves, and
+        # Chrome resolves any *.localhost name to loopback. The page uses the
+        # same loopback rule as the browser transport (`is_loopback_host`:
+        # `localhost`, `*.localhost`, `[::1]`, 127/8), so a development signer
+        # is not mistaken for an insecure one.
+        captured = Captured()
+        LoopbackHandler.captured = captured
+        LoopbackHandler.token = "token-local-" + str(int(time.time() * 1_000_000))
+        driver.get(
+            relay_origin
+            + "/auth/?case=local-signer#"
+            + fragment(
+                signer=f"http://ii.localhost:{relay_server.server_address[1]}/fake-signer",
+                message=message("local-1"),
+                state="state-local",
+                callback=relay_origin + "/auth/callback",
+                port=loopback_port,
+                token=LoopbackHandler.token,
+            )
+        )
+        if not captured.event.wait(timeout=30):
+            return fail("a local signer on *.localhost was not let through", driver)
+        print("PASS  a local signer on *.localhost is accepted as a signer")
+
+        # -- an http signer that is not loopback is still refused -----------
+        driver.get(
+            relay_origin
+            + "/auth/?case=not-local#"
+            + fragment(
+                signer="http://example.com/signer",
+                message=message("not-local"),
+                state="state-not-local",
+                callback=relay_origin + "/auth/callback",
+                port="1",
+                token="x",
+            )
+        )
+        text = wait_for_text(driver, "must be an HTTPS URL")
+        assert "must be an HTTPS URL" in (text or ""), text
+        print("PASS  a plain-http signer outside loopback is refused")
 
         # -- a wrong token is not delivered --------------------------------
         captured = Captured()

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A local Internet Identity was rejected as a signer.** The relay page only
+  accepted `localhost` and `127.0.0.1` over HTTP, so a development signer at
+  `http://<canister>.localhost:8000` failed with "The signer must be an HTTPS
+  URL". The page now uses the browser transport's loopback rule
+  (`is_loopback_host`: `localhost`, `*.localhost`, `[::1]`, 127.0.0.0/8), which
+  is also what Internet Identity accepts.
+
 ## [0.49.3] - 2026-11-15
 
 ### Fixed
