@@ -28,33 +28,33 @@ keywords = ["icp", "internet-computer", "identity", "frontend"]
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
-base64 = "0.23.1"
-bon = "3.10.3"
-ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
-futures = "0.3.34"
-hex = "0.4.3"
-ic-agent = { version = "0.49.3", default-features = false }
-k256 = "0.13.4"
-p256 = "0.13.2"
-parking_lot = "0.13.0"
-rand = "0.10.3"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-url = "2.5.8"
-thiserror = "2.0.21"
-tracing = { version = "0.1.44", optional = true }
+base64 = "0.23"
+bon = "3"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+futures = "0.3"
+hex = "0.4"
+ic-agent = { version = "0.49", default-features = false }
+k256 = "0.13"
+p256 = "0.13"
+parking_lot = "0.13"
+rand = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+thiserror = "2"
+tracing = { version = "0.1", optional = true }
 
 # The v11 client's internals
 async-trait = "0.1"
 candid = "0.10"
 
 # `wasm-js` feature
-getrandom = { version = "0.4.3", optional = true }
-gloo-timers = { version = "0.4.0", optional = true, features = ["futures"] }
-idb = { version = "0.6.5", optional = true }
-wasm-bindgen = { version = "0.2.130", optional = true }
-wasm-bindgen-futures = { version = "0.4.80", optional = true }
-web-sys = { version = "0.3.107", optional = true, default-features = false, features = [
+getrandom = { version = "0.4", optional = true }
+gloo-timers = { version = "0.4", optional = true, features = ["futures"] }
+idb = { version = "0.6", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, default-features = false, features = [
     "BroadcastChannel",
     "Crypto",
     "CryptoKey",
@@ -75,27 +75,27 @@ web-sys = { version = "0.3.107", optional = true, default-features = false, feat
 ] }
 
 # `native` feature
-chrono = { version = "0.4.45", optional = true }
-futures-timer = "3.0.4"
+chrono = { version = "0.4", optional = true }
+futures-timer = "3"
 # `keyring` feature
-keyring = { version = "4.2.0", optional = true, features = [
+keyring = { version = "4.1", optional = true, features = [
     "apple-native-keyring-store",
     "windows-native-keyring-store",
     "zbus-secret-service-keyring-store",
 ] }
-keyring-core = { version = "1.0.1", optional = true }
+keyring-core = { version = "1", optional = true }
 # `pem` feature
-pkcs8 = { version = "0.10.2", optional = true, features = ["pem"] }
+pkcs8 = { version = "0.10", optional = true, features = ["pem"] }
 # `android-password` feature
 chacha20poly1305 = { version = "0.10", optional = true }
 pbkdf2 = { version = "0.12", optional = true }
 
 # `uniffi` feature
-uniffi = { version = "0.32.2", optional = true, features = ["cli"] }
-sha2 = { version = "0.10.9", optional = true }
+uniffi = { version = "0.32", optional = true, features = ["cli"] }
+sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.80"
+wasm-bindgen-test = "0.3"
 
 [features]
 default = ["wasm-js"]

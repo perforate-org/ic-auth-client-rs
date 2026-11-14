@@ -44,8 +44,10 @@ printf 'metadata:   minor %s, tested with %s\n' "$metadata_minor" "$metadata_tes
     || fail "the crate version ($crate_version) and [package.metadata.ic-agent] minor ($metadata_minor) disagree"
 [ "$dependency_pair" = "$metadata_minor" ] \
     || fail "the ic-agent requirement ($dependency_version) does not match metadata minor ($metadata_minor)"
-[ "$metadata_tested" = "$dependency_version" ] \
-    || fail "metadata says tested = $metadata_tested, the dependency says $dependency_version"
+case "$metadata_tested" in
+    "$dependency_pair".*) ;;
+    *) fail "metadata says tested = $metadata_tested, which is not an ic-agent $dependency_pair release" ;;
+esac
 
 if [ "${1:-}" != "--no-tree" ]; then
     command -v cargo >/dev/null 2>&1 || fail "cargo is not on PATH"

@@ -45,9 +45,11 @@ for line in lines:
     if stripped.startswith("["):
         in_metadata = stripped == "[package.metadata.ic-agent]"
 
-    # The dependency itself: `ic-agent = { version = "0.49.3", ... }`.
+    # The dependency itself: `ic-agent = { version = "0.49", ... }`. The patch
+    # this run verifies goes into `tested`, not the floor: a new patch must not
+    # force an application off the `ic-agent` patch it already resolves.
     if not moved_dependency and line.startswith("ic-agent = {"):
-        out.append(re.sub(r'version = "[^"]*"', f'version = "{version}"', line, count=1))
+        out.append(re.sub(r'version = "[^"]*"', f'version = "{pair}"', line, count=1))
         moved_dependency = True
         continue
 
