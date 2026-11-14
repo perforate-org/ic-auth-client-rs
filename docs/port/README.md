@@ -24,6 +24,7 @@ repository at the pinned versions:
 | [`protocols/signer-protocol.md`](protocols/signer-protocol.md) | ICRC-25 JSON-RPC, ICRC-29 postMessage channel and heartbeat, ICRC-167 URL transport and journal |
 | [`protocols/attributes-notifications-sso.md`](protocols/attributes-notifications-sso.md) | `requestAttributes`, notification consent, SSO domain status |
 | [`protocols/session-delegations.md`](protocols/session-delegations.md) | The two-level delegation model, app-delegation minter, rotating identity, locks |
+| [`native-icrc167.md`](native-icrc167.md) | **Rust-only design proposal** (not upstream): native desktop sign-in over ICRC-167 through an app-hosted relay page; probe evidence, architecture, API, rotation, security, phases |
 | [`protocols/rust-port-mapping.md`](protocols/rust-port-mapping.md) | Per-flow mapping onto the Rust crate, risks, design proposals |
 | [`protocols/acceptance-tests.md`](protocols/acceptance-tests.md) | Upstream tests → acceptance criteria for the Rust port |
 | [`state/README.md`](state/README.md) | Index of the storage/session specs and the constants each store uses |

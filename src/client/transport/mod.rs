@@ -32,6 +32,18 @@ pub mod post_message;
 #[cfg(any(feature = "wasm-js", test))]
 pub mod url;
 
+/// ICRC-167 URL transport for a native process.
+///
+/// The browser implementation above drives a page in the same process; this one
+/// drives an application-hosted relay page in the user's browser and receives
+/// the answer over a loopback listener. Desktop only.
+#[cfg(all(
+    feature = "native",
+    not(feature = "wasm-js"),
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
+pub mod native_url;
+
 /// The JSON-RPC version every message carries.
 pub const JSON_RPC_VERSION: &str = "2.0";
 
@@ -333,6 +345,16 @@ impl Journal for NullJournal {
 pub use post_message::{PostMessageChannel, PostMessageTransport, PostMessageTransportOptions};
 #[cfg(feature = "wasm-js")]
 pub use url::{UrlChannel, UrlJournal, UrlTransport, UrlTransportOptions};
+
+#[cfg(all(
+    feature = "native",
+    not(feature = "wasm-js"),
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
+pub use native_url::{
+    CallbackBroker, CallbackPayload, LoopbackBroker, NativeUrlTransport, NativeUrlTransportOptions,
+    RelayRequest,
+};
 
 #[cfg(test)]
 mod tests {

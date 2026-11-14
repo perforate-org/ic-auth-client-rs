@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signing in…</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.6 system-ui, -apple-system, sans-serif; max-width: 32rem; margin: 20vh auto 0; padding: 0 1rem; text-align: center; }
+    h1 { font-size: 1.05rem; font-weight: 600; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+<h1 id="status">Finishing the sign-in…</h1>
+<p>You can close this tab when the application is signed in.</p>
+<script>
+// The ICRC-167 callback: the signer navigated here with its answer in the
+// fragment. This page hands that answer to the native application's loopback
+// listener, then long-polls for the next request of the same ceremony. A
+// ceremony that needs several requests (an attribute request after the session
+// delegation, notification consent) keeps this one tab and navigates it again.
+(() => {
+  const status = document.getElementById("status");
+  const ATTEMPT = "icrc167.attempt";
+
+  const fail = (message) => {
+    sessionStorage.removeItem(ATTEMPT);
+    status.textContent = message;
+  };
+
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ""));
+  // Take the message out of history and the referrer before anything else.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const message = fragment.get("message");
+  const state = fragment.get("state");
+  if (!message) {
+    // A signer-initiated navigation, not an answer: nothing to deliver.
+    return fail("This page is the sign-in callback.");
+  }
+  if (!state) {
+    return fail("The signer did not return the request state.");
+  }
+
+  let attempt;
+  try {
+    attempt = JSON.parse(sessionStorage.getItem(ATTEMPT) || "null");
+  } catch {
+    attempt = null;
+  }
+  if (!attempt || !attempt.port || !attempt.token) {
+    return fail("This sign-in did not start in this tab.");
+  }
+  if (attempt.expectedState !== state) {
+    return fail("The signer answered a request this tab is not waiting for.");
+  }
+
+  const base = "http://127.0.0.1:" + encodeURIComponent(attempt.port);
+  const authorization = "Bearer " + attempt.token;
+
+  const next = async () => {
+    // Long-poll: the application holds this request until either another step
+    // is ready or this ceremony is done, so the tab never sits on a dead page.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+    try {
+      const response = await fetch(base + "/icrc167/poll", {
+        cache: "no-store",
+        headers: { Authorization: authorization },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        return fail("The application stopped waiting for this sign-in.");
+      }
+      const body = await response.json();
+      if (body.next) {
+        attempt.expectedState = body.next.state;
+        sessionStorage.setItem(ATTEMPT, JSON.stringify(attempt));
+        const target = new URL(body.next.signer);
+        target.hash = new URLSearchParams({
+          message: body.next.message,
+          callback: body.next.callback,
+          state: body.next.state,
+        }).toString();
+        location.replace(target.toString());
+        return;
+      }
+      sessionStorage.removeItem(ATTEMPT);
+      status.textContent = "Done. Return to the application.";
+    } catch {
+      clearTimeout(timer);
+      fail("The application stopped waiting for this sign-in.");
+    }
+  };
+
+  fetch(base + "/icrc167", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: authorization,
+    },
+    body: JSON.stringify({ state, message }),
+  })
+    .then((response) => {
+      if (response.status === 409) {
+        return fail("The application is no longer waiting for this sign-in.");
+      }
+      if (!response.ok) {
+        return fail("The application refused the answer; return to it and try again.");
+      }
+      return next();
+    })
+    .catch(() => {
+      fail("The application is not listening; return to it and try again.");
+    });
+})();
+</script>
+</body>
+</html>

@@ -524,8 +524,8 @@ pub async fn acquire_delegation(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use ic_agent::identity::{BasicIdentity, Delegation, Identity as _};
 

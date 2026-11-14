@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICRC-167 probe</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.55 system-ui, -apple-system, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: .2rem; }
+    h2 { font-size: 1.05rem; margin-top: 2rem; }
+    p.lede { margin-top: .2rem; color: #666; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+    pre { background: #f4f4f5; padding: .7rem; border-radius: .4rem; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: .7rem 0; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid #ddd; padding: .45rem .5rem; }
+    th { font-weight: 600; font-size: 13px; }
+    .ok { color: #0a7a2f; font-weight: 600; }
+    .bad { color: #b3261e; font-weight: 600; }
+    .warn { color: #8a5a00; font-weight: 600; }
+    .pending { color: #555; }
+    button { font: inherit; padding: .3rem .7rem; border-radius: .35rem; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    details { margin: .3rem 0; }
+    summary { cursor: pointer; font-size: 13px; color: #444; }
+    .banner { border: 1px solid #d9b033; background: #fff8e0; color: #4a3800; padding: .6rem .8rem; border-radius: .4rem; }
+    .banner.bad { border-color: #d99; background: #fff0f0; color: #6a1a1a; }
+    .row-actions { white-space: nowrap; }
+  </style>
+</head>
+<body>
+<h1>ICRC-167 conformance probe</h1>
+<p class="lede">
+  Answers whether Internet Identity's URL transport can carry the requests this
+  crate's sign-in needs. Keys are generated per attempt and kept only in
+  <code>sessionStorage</code>; nothing is uploaded anywhere.
+</p>
+
+<div id="env"></div>
+
+<h2>Experiments</h2>
+<table id="experiments"><thead>
+  <tr><th style="width:3rem">ID</th><th>Question</th><th style="width:9rem">Status</th><th></th></tr>
+</thead><tbody></tbody></table>
+
+<p>
+  <button id="run-all">Run all remaining (one consent each)</button>
+  <button id="copy">Copy results JSON</button>
+  <button id="reset">Reset</button>
+</p>
+
+<h2>Results</h2>
+<p class="lede" id="results-empty">Nothing recorded yet.</p>
+<table id="results" hidden><thead>
+  <tr><th>ID</th><th>Checks</th><th>Raw</th></tr>
+</thead><tbody></tbody></table>
+
+<h2>Configuration</h2>
+<p>
+  Signer URL:
+  <input id="signer" size="46" spellcheck="false">
+  <button id="save-signer">Use</button>
+</p>
+<p class="lede" id="config-note"></p>
+
+<pre id="selftest-output" hidden></pre>
+<script type="module">
+import {
+  EXPERIMENTS,
+  II_AUTHORIZE_URL,
+  PROBE_SCHEMA,
+  callbackUrlFor,
+  experimentById,
+  inspectMessage,
+  randomToken,
+  signerUrl,
+} from "./icrc167.js";
+
+const STORAGE = {
+  config: "icrc167-probe/config",
+  pending: "icrc167-probe/pending",
+  results: "icrc167-probe/results",
+};
+
+const params = new URLSearchParams(location.search);
+const state = {
+  config: readConfig(),
+  results: readJson(STORAGE.results, []),
+  pending: readJson(STORAGE.pending, null),
+};
+
+// A selftest run drives every experiment against the fake signer on its own.
+// The flag is in the URL on the first load and in the stored config on every
+// load after the callback returns to "/".
+const selftest = params.get("selftest") === "1" || state.config.selftest === true;
+
+function readJson(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  sessionStorage.setItem(key, JSON.stringify(value));
+}
+
+function readConfig() {
+  const stored = readJson(STORAGE.config, {});
+  // Seed from the URL only when there is no stored choice yet: the fake-signer
+  // server redirects "/" to "/?signer=..." on every return load, and that must
+  // not overwrite the signer an in-flight run (or the user) selected.
+  if (params.get("signer") && !stored.signer) stored.signer = params.get("signer");
+  if (params.get("selftest") === "1") stored.selftest = true;
+  stored.signer = resolveSigner(stored.signer || II_AUTHORIZE_URL);
+  writeJson(STORAGE.config, stored);
+  return stored;
+}
+
+function resolveSigner(value) {
+  try {
+    return new URL(value, location.href).toString();
+  } catch {
+    return II_AUTHORIZE_URL;
+  }
+}
+
+function callbackUrl() {
+  return callbackUrlFor(location.origin, "/callback.html");
+}
+
+function keyLabel(result) {
+  if (!result || result.schema !== PROBE_SCHEMA) return "warn";
+  if (result.status !== "response") return "bad";
+  const errors = result.checks.errors || [];
+  const expectsError = experimentById(result.experiment)?.expectation === "error";
+  if (expectsError) return errors.length > 0 ? "ok" : "warn";
+  if (errors.length > 0) return "bad";
+  if (!result.checks.hasDelegation) return "warn";
+  return result.checks.leafMatchesAskedKey ? "ok" : "bad";
+}
+
+function expiresIn(expirationNs) {
+  const expires = Number(expirationNs) / 1e6;
+  if (!Number.isFinite(expires)) return "unknown expiry";
+  const seconds = Math.round((expires - Date.now()) / 1000);
+  if (seconds <= 0) return "already expired";
+  if (seconds < 3600) return `expires in ${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `expires in ${(seconds / 3600).toFixed(1)}h`;
+  return `expires in ${(seconds / 86400).toFixed(1)}d`;
+}
+
+function summarise(result) {
+  switch (result.status) {
+    case "response":
+      if (result.checks.errors.length) {
+        const error = result.checks.errors[0].error;
+        return `error ${error.code}: ${error.message}`;
+      }
+      if (!result.checks.hasDelegation) return "answered, but without a delegation";
+      return [
+        `chain ${result.checks.hopCount} hop(s)`,
+        `leaf ${result.checks.leafMatchesAskedKey ? "matches" : "DOES NOT match"}`,
+        expiresIn(result.checks.expiration),
+        `hop targets ${JSON.stringify(result.checks.hopTargets)}`,
+        `hop permissions ${JSON.stringify(result.checks.hopPermissions)}`,
+      ].join(", ");
+    case "no-message":
+      return "callback loaded without a message (not a response)";
+    default:
+      return result.status;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Keys
+// ---------------------------------------------------------------------------
+
+async function generateKey() {
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (!subtle) throw new Error("WebCrypto is unavailable");
+  let pair;
+  try {
+    pair = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  } catch {
+    pair = await subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"],
+    );
+  }
+  const spki = await subtle.exportKey("spki", pair.publicKey);
+  const jwk = await subtle.exportKey("jwk", pair.privateKey);
+  const publicKey = btoa(String.fromCharCode(...new Uint8Array(spki)));
+  return { publicKey, jwk: JSON.stringify(jwk) };
+}
+
+// ---------------------------------------------------------------------------
+// Running an experiment
+// ---------------------------------------------------------------------------
+
+async function run(experiment) {
+  const key = await generateKey();
+  const requestState = randomToken(32);
+  const requests = experiment.build(key.publicKey);
+  // One request goes out as an object, several as a batch, matching what the
+  // crate's signer sends per call.
+  const message = requests.length === 1 ? requests[0] : requests;
+  const pending = {
+    experiment: experiment.id,
+    state: requestState,
+    publicKey: key.publicKey,
+    jwk: key.jwk,
+    request: requests,
+    startedAt: new Date().toISOString(),
+  };
+  writeJson(STORAGE.pending, pending);
+  const url = signerUrl(state.config.signer, {
+    message,
+    callback: callbackUrl(),
+    state: requestState,
+  });
+  location.href = url;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+function renderEnvironment() {
+  const target = document.getElementById("env");
+  const allowList = new URL("/.well-known/ii-auth-callbacks", location.origin).toString();
+  target.innerHTML = `
+    <p class="lede">
+      Origin <code>${location.origin}</code><br>
+      Callback <code>${callbackUrl()}</code><br>
+      Signer <code>${state.config.signer}</code>
+    </p>
+    <p class="lede">
+      Allow-list <code>${allowList}</code>
+      <span id="allow-list-status" class="pending">checking...</span>
+    </p>`;
+  fetch(allowList, { cache: "no-store" })
+    .then(async (response) => {
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${body.slice(0, 120)}`);
+      }
+      try {
+        return JSON.parse(body);
+      } catch {
+        // A tunnel or static host error page looks like a successful fetch; say
+        // what actually came back instead of blaming the signer.
+        throw new Error(`not JSON (HTTP ${response.status}): ${body.slice(0, 120)}`);
+      }
+    })
+    .then((allowListDocument) => {
+      const declared = Array.isArray(allowListDocument.callbacks)
+        ? allowListDocument.callbacks
+        : [];
+      const ours = declared.includes(callbackUrl());
+      const status = document.getElementById("allow-list-status");
+      status.className = ours ? "ok" : "bad";
+      status.textContent = ours
+        ? ` declares this callback (${declared.length} entry/entries)`
+        : ` does NOT declare this callback: ${JSON.stringify(declared)}`;
+      if (!ours) {
+        const banner = document.createElement("div");
+        banner.className = "banner bad";
+        banner.textContent =
+          "Internet Identity refuses callbacks it cannot find in the allow-list. " +
+          "Serve /.well-known/ii-auth-callbacks with this exact callback first.";
+        document.getElementById("env").appendChild(banner);
+      }
+    })
+    .catch((error) => {
+      const status = document.getElementById("allow-list-status");
+      status.className = "bad";
+      status.textContent = ` could not be read (${error.message}) - II's fetch will fail too`;
+    });
+}
+
+function completedExperiments() {
+  return new Set(
+    state.results
+      .filter((result) => result.schema === PROBE_SCHEMA)
+      .map((result) => result.experiment),
+  );
+}
+
+function renderExperiments() {
+  const tbody = document.querySelector("#experiments tbody");
+  tbody.innerHTML = "";
+  const done = completedExperiments();
+  for (const experiment of EXPERIMENTS) {
+    const result = state.results.find((entry) => entry.experiment === experiment.id);
+    const row = document.createElement("tr");
+
+    const id = document.createElement("td");
+    id.innerHTML = `<code>${experiment.id}</code>`;
+
+    const question = document.createElement("td");
+    question.innerHTML = `${experiment.title}<br><span class="lede">${experiment.question}</span>`;
+
+    const status = document.createElement("td");
+    if (result && result.schema === PROBE_SCHEMA) {
+      status.className = keyLabel(result);
+      status.textContent = summarise(result);
+    } else if (result && result.schema !== PROBE_SCHEMA) {
+      status.className = "warn";
+      status.textContent = "stale record from an older probe - run again";
+    } else if (state.pending && state.pending.experiment === experiment.id) {
+      status.className = "pending";
+      status.textContent = "waiting for the browser round-trip";
+    } else {
+      status.className = "pending";
+      status.textContent = "not run";
+    }
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+    const button = document.createElement("button");
+    button.textContent = result ? "Run again" : "Run";
+    button.addEventListener("click", () => run(experiment));
+    actions.appendChild(button);
+    if (state.pending && state.pending.experiment === experiment.id) {
+      const abandon = document.createElement("button");
+      abandon.textContent = "Abandon";
+      abandon.style.marginLeft = ".4rem";
+      abandon.addEventListener("click", () => {
+        sessionStorage.removeItem(STORAGE.pending);
+        state.pending = null;
+        render();
+      });
+      actions.appendChild(abandon);
+    }
+
+    row.append(id, question, status, actions);
+    tbody.appendChild(row);
+  }
+  document.getElementById("run-all").disabled =
+    EXPERIMENTS.every((experiment) => done.has(experiment.id));
+  document.getElementById("results-empty").hidden = state.results.length > 0;
+  document.getElementById("results").hidden = state.results.length === 0;
+}
+
+function renderResults() {
+  const tbody = document.querySelector("#results tbody");
+  tbody.innerHTML = "";
+  for (const result of state.results) {
+    const row = document.createElement("tr");
+    const id = document.createElement("td");
+    id.innerHTML = `<code>${result.experiment}</code>`;
+    const checks = document.createElement("td");
+    checks.innerHTML = `<span class="${keyLabel(result)}">${summarise(result)}</span>`;
+    const raw = document.createElement("td");
+    raw.innerHTML = `<details><summary>request + response</summary><pre>${escapeHtml(
+      JSON.stringify(
+        { request: result.request, http: result.http, response: result.response, checks: result.checks },
+        null,
+        2,
+      ),
+    )}</pre></details>`;
+    row.append(id, checks, raw);
+    tbody.appendChild(row);
+  }
+  document.getElementById("selftest-output").textContent = JSON.stringify(
+    { selftest, results: state.results },
+    null,
+    2,
+  );
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]);
+}
+
+function render() {
+  document.getElementById("signer").value = state.config.signer;
+  renderExperiments();
+  renderResults();
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+document.getElementById("run-all").addEventListener("click", async () => {
+  const done = completedExperiments();
+  const next = EXPERIMENTS.find((experiment) => !done.has(experiment.id));
+  if (next) await run(next);
+});
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const payload = JSON.stringify({ results: state.results }, null, 2);
+  try {
+    await navigator.clipboard.writeText(payload);
+    document.getElementById("copy").textContent = "Copied";
+  } catch {
+    prompt("Copy the results JSON", payload);
+  }
+});
+
+document.getElementById("reset").addEventListener("click", () => {
+  sessionStorage.removeItem(STORAGE.results);
+  sessionStorage.removeItem(STORAGE.pending);
+  state.results = [];
+  state.pending = null;
+  render();
+});
+
+document.getElementById("save-signer").addEventListener("click", () => {
+  state.config.signer = resolveSigner(document.getElementById("signer").value);
+  writeJson(STORAGE.config, state.config);
+  render();
+});
+
+renderEnvironment();
+render();
+
+// -- selftest ---------------------------------------------------------------
+if (selftest) {
+  const done = completedExperiments();
+  const remaining = EXPERIMENTS.filter((experiment) => !done.has(experiment.id));
+  if (remaining.length > 0) {
+    run(remaining[0]);
+  } else {
+    const failures = state.results.filter((result) => keyLabel(result) === "bad");
+    document.title = failures.length === 0 ? "SELFTEST PASS" : `SELFTEST FAIL ${failures.length}`;
+  }
+}
+</script>
+</body>
+</html>

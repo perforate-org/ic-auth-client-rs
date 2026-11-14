@@ -272,6 +272,72 @@ Notes for this flow:
   and posts the delegation back, so the `ii-bridge/` template the crate used to
   ship is gone.
 
+### ICRC-167 relay (recommended when the app has a domain)
+
+Native sign-in can use the same ICRC-167 URL transport as the browser instead of
+the provider's non-browser flow: two static pages the application hosts on its
+own origin carry the request to the signer and hand the answer back over
+`127.0.0.1`. That removes the CLI-access toggle, and it gives the v11 model
+(session delegation, canister-minted app delegation, rotation) on native.
+
+```rust
+use ic_auth_client::client::{AuthClient, AuthClientCreateOptions, NativeRelayOptions};
+
+let client = AuthClient::new(AuthClientCreateOptions {
+    native_relay: Some(NativeRelayOptions {
+        relay_origin: "https://app.example".to_string(),
+        ..Default::default()
+    }),
+    ..Default::default()
+})?;
+let identity = client.sign_in(Default::default()).await?;
+```
+
+- [`relay/`](relay/README.md) holds the pages and the
+  `/.well-known/ii-auth-callbacks` template; it walks through deploying them on
+  a public HTTPS origin and keeping the principal identical to the web sign-in.
+- The identity provider validates the callback declaration and the derivation
+  origin, so the relay cannot be used to sign a user in as somebody else's app.
+- Without `native_relay` the client keeps using the flow above, which needs no
+  domain. Desktop only: mobile needs a platform callback session
+  (ASWebAuthenticationSession / App Links), which is not implemented yet.
+
+### ICRC-167 below the browser
+
+An application that can host two static pages on its own origin can sign in over
+ICRC-167 instead, the transport the web build uses. That path needs no
+verification-code round trip through the provider's non-browser flow:
+
+1. deploy [`relay/`](relay/README.md) (the two pages plus the callback
+   allow-list) at `https://<your-app>` and serve
+   `/.well-known/ii-auth-callbacks`;
+2. set `native_relay` when creating the client:
+
+```rust
+let client = AuthClient::new(AuthClientCreateOptions {
+    native_relay: Some(NativeRelayOptions {
+        relay_origin: "https://my-app.example".to_string(),
+        ..Default::default()
+    }),
+    ..Default::default()
+})?;
+let identity = client.sign_in(Default::default()).await?;
+```
+
+The relay runs on the application's own origin on purpose: that origin is what
+Internet Identity derives the principal from, so the principal matches the same
+user's browser sign-in. A relay on a shared domain would sign a different
+identity in unless the application also declares the relay in its
+`/.well-known/ii-alternative-origins`.
+
+Unlike the non-browser flow, this one rotates: the client holds an II-scoped
+session delegation and mints app delegations through the canister, replacing
+them as they age. `ic-agent` signs synchronously, so call
+`client.get_identity()` before a batch of requests (it mints on demand), and a
+host that wants the browser's proactive behaviour calls
+`identity.refresh()` on window focus or app resume. Leaving `native_relay` unset
+keeps the non-browser flow above.
+
 ## Port status
 
 This crate tracks upstream `@icp-sdk/auth` **11.2.0**. The specification the port

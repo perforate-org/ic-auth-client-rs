@@ -22,6 +22,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The probe is the executable record of Internet Identity's ICRC-167
+      # behaviour (docs/port/native-icrc167.md). Only its protocol helpers run
+      # here; the real-identity and browser runs need a public origin, a user
+      # and a ChromeDriver, so they stay manual (probes/icrc167/README.md).
+      - run: node --test probes/icrc167/selftest.mjs
+
   audit:
     name: advisories
     runs-on: ubuntu-latest

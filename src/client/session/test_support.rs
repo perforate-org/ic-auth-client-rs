@@ -19,6 +19,7 @@ use crate::ArcIdentity;
 use crate::client::credentials::{Credential, CredentialStorage};
 use crate::client::error::AuthClientError;
 use crate::client::platform::Listener;
+use crate::client::platform::{Executor, ExecutorTask};
 use crate::client::session::app_delegation_source::{AppDelegationSource, SessionError};
 use crate::client::session::identity::{Clock, ScheduledTask, Scheduler};
 use crate::delegation_chain::DelegationChain;
@@ -264,4 +265,15 @@ impl FakeScheduler {
 #[cfg(feature = "native")]
 pub fn account_principal(key_der: &[u8]) -> Principal {
     Principal::self_authenticating(key_der)
+}
+
+/// Runs a task on the calling thread, so a test decides when background work
+/// (a rotation's mint, a record write) actually runs.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InlineExecutor;
+
+impl Executor for InlineExecutor {
+    fn spawn(&self, task: Box<dyn ExecutorTask>) {
+        futures::executor::block_on(task.build());
+    }
 }

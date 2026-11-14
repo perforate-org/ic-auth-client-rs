@@ -1,0 +1,3 @@
+{
+  "callbacks": ["https://app.example/auth/callback"]
+}

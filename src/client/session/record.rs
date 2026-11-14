@@ -11,11 +11,9 @@
 //! nothing, and writing through it traps on the platform's assert.
 
 use crate::client::credentials::SharedCredentialStorage;
-#[cfg(any(feature = "wasm-js", test))]
 use crate::client::now::now_ns;
 use crate::client::slots::Slots;
 use crate::client::state::SharedStateStorage;
-#[cfg(any(feature = "wasm-js", test))]
 use crate::client::state::StoredSessionState;
 
 /// Removes the record and the credentials: what signing out does.
@@ -51,7 +49,6 @@ pub(crate) async fn drop_session(
 /// A session that ran out or was revoked ended on its own, and an application
 /// says so differently: "your session ended, sign back in" names the account it
 /// ended for, which a removed record cannot.
-#[cfg(any(feature = "wasm-js", test))]
 pub(crate) async fn expire_session(
     state: &SharedStateStorage,
     credentials: &SharedCredentialStorage,
@@ -79,7 +76,6 @@ pub(crate) async fn expire_session(
 /// when that session was ever used, and removed when it never was; if the record
 /// has moved on, someone else owns the sign-in and this origin only drops its
 /// own claim.
-#[cfg(any(feature = "wasm-js", test))]
 pub(crate) async fn end_or_drop(
     state: SharedStateStorage,
     credentials: SharedCredentialStorage,

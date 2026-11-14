@@ -1,0 +1,13 @@
+# Netlify / Cloudflare Pages header rules for the relay pages.
+#
+# The signer fetches the allow-list with CORS, without credentials, and with
+# `cache: no-store`; a static host must not strip those. The pages themselves
+# carry the answer in the fragment, so they must not be cached either.
+
+/.well-known/ii-auth-callbacks
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+  Content-Type: application/json
+
+/*
+  Cache-Control: no-store

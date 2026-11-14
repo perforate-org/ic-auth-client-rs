@@ -1,0 +1,17 @@
+# Netlify / Cloudflare Pages header rules for the probe.
+#
+# Internet Identity fetches the allow-list with CORS, without credentials, and
+# with `cache: no-store`; a static host must not strip those.
+
+/.well-known/ii-auth-callbacks
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+  Content-Type: application/json
+
+/.well-known/ii-alternative-origins
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+  Content-Type: application/json
+
+/*
+  Cache-Control: no-store

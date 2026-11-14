@@ -54,6 +54,18 @@ impl ClientIdentity {
         self.principal() == Principal::anonymous()
     }
 
+    /// Mints a replacement delegation if one is due.
+    ///
+    /// A native host calls this on its own lifecycle events --- window focus, app
+    /// resume --- which is what the browser build gets from its DOM activity
+    /// watchers. It never blocks and never mints early: a credential with life
+    /// left costs nothing.
+    pub async fn refresh(&self) {
+        if let Some(session) = &self.session {
+            session.refresh().await;
+        }
+    }
+
     /// When the delegation this identity signs with expires, in milliseconds
     /// since the Unix epoch.
     ///
