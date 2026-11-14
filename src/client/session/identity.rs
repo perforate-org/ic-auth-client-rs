@@ -53,7 +53,7 @@ use ic_agent::identity::{Delegation, Identity, Signature, SignedDelegation};
 use parking_lot::Mutex;
 
 use crate::client::credentials::{Credential, SharedCredentialStorage};
-use crate::client::platform::{Listener, PlatformBounds};
+use crate::client::platform::{Executor, Listener, PlatformBounds, default_executor};
 use crate::client::session::app_delegation_source::{
     AppDelegationSource, Held, SessionError, SessionGoneError, account_of, ms_left,
 };
@@ -416,6 +416,7 @@ struct Inner {
     session_expires_at_ms: u64,
     on_session_gone: Arc<dyn Listener>,
     scheduler: Arc<dyn Scheduler>,
+    executor: Arc<dyn Executor>,
     held: Mutex<Option<Held>>,
     gate: Mutex<MintGate>,
     current_was_used: AtomicBool,
@@ -545,7 +546,7 @@ impl Inner {
             if !inner.current_was_used.load(Ordering::SeqCst) {
                 return;
             }
-            inner.mint_blocking();
+            inner.spawn_mint();
         });
         let task = self.scheduler.schedule(delay as u64, callback);
         *self.scheduled.lock() = Some(task);
@@ -557,19 +558,21 @@ impl Inner {
         }
     }
 
-    /// Runs one mint, blocking this thread where the target allows it.
-    fn mint_blocking(self: &Arc<Self>) {
-        #[cfg(feature = "wasm-js")]
-        {
-            let inner = self.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let _ = inner.mint().await;
-            });
-        }
-        #[cfg(all(not(feature = "wasm-js"), feature = "native"))]
-        {
-            let _ = futures::executor::block_on(self.mint());
-        }
+    /// Runs one mint off the caller's thread, on the platform's executor.
+    ///
+    /// The future is built there rather than here: the storage traits' futures
+    /// are `!Send` on native, and a mint performs canister calls, which need the
+    /// executor's Tokio reactor.
+    fn spawn_mint(self: &Arc<Self>) {
+        let inner = self.clone();
+        self.executor.spawn(Box::new(move || {
+            let inner = inner.clone();
+            let future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> =
+                Box::pin(async move {
+                    let _ = inner.mint().await;
+                });
+            future
+        }));
     }
 
     /// Starts a mint without waiting for it.
@@ -578,7 +581,7 @@ impl Inner {
     /// decide when it runs.
     fn mint_in_background(self: &Arc<Self>) {
         let inner = self.clone();
-        let callback: Arc<dyn Listener> = Arc::new(move || inner.mint_blocking());
+        let callback: Arc<dyn Listener> = Arc::new(move || inner.spawn_mint());
         let _ = self.scheduler.schedule(0, callback);
     }
 
@@ -665,6 +668,8 @@ pub struct SessionIdentityCreateOptions {
     pub clock: Option<Arc<dyn Clock>>,
     /// The scheduler that decides when a rotation is due.
     pub scheduler: Option<Arc<dyn Scheduler>>,
+    /// Where background mints run. Defaults to the platform's executor.
+    pub executor: Option<Arc<dyn Executor>>,
     /// The lock manager that serialises minting across tabs.
     pub locks: Option<Arc<dyn LockManager>>,
 }
@@ -687,6 +692,8 @@ pub struct SessionIdentityOptions {
     pub clock: Option<Arc<dyn Clock>>,
     /// The scheduler that decides when a rotation is due.
     pub scheduler: Option<Arc<dyn Scheduler>>,
+    /// Where background mints run. Defaults to the platform's executor.
+    pub executor: Option<Arc<dyn Executor>>,
     /// The lock manager that serialises minting across tabs.
     pub locks: Option<Arc<dyn LockManager>>,
 }
@@ -738,6 +745,7 @@ impl SessionIdentity {
             expected_account,
             clock,
             scheduler,
+            executor,
             locks,
         } = options;
 
@@ -773,6 +781,7 @@ impl SessionIdentity {
                 session_expires_at_ms,
                 on_session_gone,
                 scheduler: scheduler.unwrap_or_else(default_scheduler),
+                executor: executor.unwrap_or_else(default_executor),
                 held: Mutex::new(None),
                 gate: Mutex::default(),
                 current_was_used: AtomicBool::new(false),
@@ -803,6 +812,7 @@ impl SessionIdentity {
             on_session_gone,
             clock,
             scheduler,
+            executor,
             locks,
         } = options;
         let account = Principal::self_authenticating(&account_key);
@@ -819,6 +829,7 @@ impl SessionIdentity {
                 session_expires_at_ms,
                 on_session_gone,
                 scheduler: scheduler.unwrap_or_else(default_scheduler),
+                executor: executor.unwrap_or_else(default_executor),
                 held: Mutex::new(None),
                 gate: Mutex::default(),
                 current_was_used: AtomicBool::new(false),
@@ -925,6 +936,10 @@ impl SessionIdentity {
             .lock()
             .clone()
             .ok_or_else(|| "This identity holds no delegation yet".to_string())?;
+        // Signing a request is somebody being here: it earns the next rotation,
+        // exactly as `prepare()`/`refresh()` do. Without this a session whose app
+        // signs without any user activity stops rotating after one mint.
+        self.inner.current_was_used.store(true, Ordering::SeqCst);
         if self.inner.ms_left(&held.chain) <= 0 {
             return Err("This identity's delegation has expired; call prepare() first".to_string());
         }
@@ -1003,7 +1018,7 @@ mod tests {
 
     use crate::client::credentials::CredentialStorage;
     use crate::client::session::test_support::{
-        FakeClock, FakeScheduler, FakeSource, SharedMemoryStore, chain_to,
+        FakeClock, FakeScheduler, FakeSource, InlineExecutor, SharedMemoryStore, chain_to,
     };
     use crate::key::BaseKeyType;
 
@@ -1058,6 +1073,7 @@ mod tests {
                 expected_account,
                 clock: Some(Arc::new(clock.clone())),
                 scheduler: Some(Arc::new(scheduler.clone())),
+                executor: Some(Arc::new(InlineExecutor)),
                 locks: None,
             }))
             .expect("a session with life left");
@@ -1330,12 +1346,50 @@ mod tests {
                 expected_account: None,
                 clock: Some(Arc::new(clock)),
                 scheduler: None,
+                executor: Some(Arc::new(InlineExecutor)),
                 locks: None,
             }))
             .unwrap_err();
         assert!(error.is_gone());
         assert_eq!(source.calls(), 0);
         assert_eq!(gone.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn signing_counts_as_use_after_a_rotation() {
+        // A rotation's adoption starts the next one only if something uses the
+        // credential; signing is that use. Without it a session whose app signs
+        // without any user activity stops rotating after the first mint.
+        let harness = harness(30 * MINUTE, TTL_MS);
+        let content = EnvelopeContent::Query {
+            ingress_expiry: 0,
+            sender: harness.identity.principal(),
+            canister_id: Principal::anonymous(),
+            method_name: "m".to_string(),
+            arg: vec![],
+            nonce: None,
+            sender_info: None,
+        };
+
+        futures::executor::block_on(harness.identity.prepare()).expect("a usable credential");
+        // Adoption (`Inner::adopt`) starts the next rotation unused; model that
+        // moment here rather than racing the executor for it. The question this
+        // test answers is whether signing brings the flag back.
+        harness
+            .identity
+            .inner
+            .current_was_used
+            .store(false, Ordering::SeqCst);
+
+        harness.identity.sign(&content).expect("a signature");
+        assert!(
+            harness
+                .identity
+                .inner
+                .current_was_used
+                .load(Ordering::SeqCst),
+            "signing a request counts as somebody being here"
+        );
     }
 
     #[test]
@@ -1401,6 +1455,7 @@ mod tests {
                 expected_account: expected,
                 clock: Some(Arc::new(clock)),
                 scheduler: None,
+                executor: Some(Arc::new(InlineExecutor)),
                 locks: None,
             }))
             .expect("an identity");
@@ -1438,6 +1493,7 @@ mod tests {
                 expected_account: expected,
                 clock: Some(Arc::new(clock)),
                 scheduler: None,
+                executor: Some(Arc::new(InlineExecutor)),
                 locks: None,
             }))
             .expect("an identity");
@@ -1476,6 +1532,7 @@ mod tests {
                 expected_account: None,
                 clock: Some(Arc::new(clock)),
                 scheduler: None,
+                executor: Some(Arc::new(InlineExecutor)),
                 locks: None,
             }))
             .expect("an identity");
@@ -1585,6 +1642,7 @@ mod tests {
             on_session_gone: Arc::new(|| {}),
             clock: Some(Arc::new(FakeClock::new(1_000_000))),
             scheduler: None,
+            executor: Some(Arc::new(InlineExecutor)),
             locks: None,
         });
         let content = EnvelopeContent::Query {

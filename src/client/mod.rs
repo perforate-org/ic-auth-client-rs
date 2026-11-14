@@ -43,21 +43,6 @@ pub mod webauth;
 mod auth_client;
 pub(crate) mod now;
 
-/// Drives a future to completion in the background.
-///
-/// The session identity reports a gone session from a synchronous callback, and
-/// the record bookkeeping that follows needs the (asynchronous) credential
-/// store, so it runs behind the browser's task queue. `wasm-js` only: the
-/// storage traits' futures are not `Send` on native (their stores are
-/// synchronous underneath), so there is nothing there to hand to a thread.
-#[cfg(feature = "wasm-js")]
-pub(crate) fn spawn_background<F>(future: F)
-where
-    F: std::future::Future<Output = ()> + 'static,
-{
-    wasm_bindgen_futures::spawn_local(future);
-}
-
 pub use auth_client::AuthClient;
 #[cfg(feature = "native")]
 pub use credentials::native::NativeCredentialStorage;

@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Native sign-in over ICRC-167**, the transport the web build uses, for
+  desktop applications that host a relay page on their own origin:
+  - `NativeUrlTransport` (`client::transport::native_url`): one navigation per
+    request through the application's relay page and a token-guarded loopback
+    listener, with `state` and response-id checks, a batch refusal, and no
+    persisted pending flow (a native process is not unloaded like a page).
+  - `AuthClientCreateOptions.native_relay` (`NativeRelayOptions`):
+    `default_transport` builds the transport from it, and validation surfaces as
+    `InvalidOptions`. Leaving it unset keeps the provider's non-browser (CLI)
+    flow.
+  - Deployable pages in [`relay/`](relay/README.md) --- the relay page, the
+    callback, the `/.well-known/ii-auth-callbacks` template and host `_headers`
+    --- with a headless-Chrome self-test (`make relay-test`), and
+    [`examples/rust/native-icrc167`](examples/rust/native-icrc167/README.md).
+- **Native rotation**: a platform `Executor` seam (browser: `spawn_local`;
+  native: one worker thread with a `current_thread` Tokio runtime and a
+  `LocalSet`, so a mint's canister calls have a reactor), `ClientIdentity::refresh()`
+  for host lifecycle events, and on-demand `prepare()` in `get_identity()`.
+
+### Fixed
+
+- Signing a request now counts as use for the rotating session. The scheduled
+  refresh only mints for a credential something used, and signing never set that
+  flag, so a session whose app signed without any user activity stopped rotating
+  after the first mint --- silent on wasm (the DOM watchers hid it) and certain
+  on native.
+
+### Changed
+
+- The native feature depends on `tokio` (`rt`, `time`, `net`): one background
+  worker thread per process, shared by every session. reqwest already
+  compiles Tokio, so the incremental cost is the runtime feature.
+
 ## [0.49.1] - 2026-11-14
 
 ### Changed

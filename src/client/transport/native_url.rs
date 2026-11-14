@@ -547,11 +547,14 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    /// What a fake broker answers with.
+    type Answer = Box<dyn Fn(&RelayRequest) -> Result<CallbackPayload, SignerError> + Send + Sync>;
+
     /// A broker that records what it was asked to deliver and answers with a
     /// canned payload, standing in for the browser and the signer.
     struct FakeBroker {
         calls: Mutex<Vec<RelayRequest>>,
-        answer: Box<dyn Fn(&RelayRequest) -> Result<CallbackPayload, SignerError> + Send + Sync>,
+        answer: Answer,
     }
 
     impl FakeBroker {

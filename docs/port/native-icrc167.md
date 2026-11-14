@@ -235,6 +235,14 @@ Cost: the native feature gains a direct `tokio` dependency (`rt`, `time`, `net`;
 reqwest already compiles Tokio, so the incremental cost is the runtime feature
 and one thread per process, shared by every session).
 
+**Implemented (phase 4):** `platform::{Executor, ExecutorTask, spawn}` with
+`WasmExecutor` (`spawn_local`) and `NativeExecutor` (one worker thread running a
+`current_thread` runtime and a `LocalSet`); `SessionIdentity` spawns its mints
+through it; `held_for_signing` marks the credential used, so signing keeps the
+rotation alive; `get_identity()` prepares the session on demand; and the
+session-gone record transition now runs on native too, through the same
+executor.
+
 Consequences:
 
 - The session-gone record half (`auth_client.rs`'s `spawn_background`) can now
@@ -316,7 +324,7 @@ Phases 1--3 are implemented: the transport and its unit tests, the
 `native_relay` option and its validation, and the deployable pages in
 [`relay/`](../../relay/README.md) with a headless-browser self-test
 (`relay/selftest.py`, 5 checks) plus [`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md).
-Phase 4 (rotation) is next.
+Phase 4 (rotation) is implemented as described in §5.
 
 ## 10. Decisions and remaining questions
 

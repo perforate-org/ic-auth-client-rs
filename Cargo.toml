@@ -76,6 +76,9 @@ web-sys = { version = "0.3", optional = true, default-features = false, features
 
 # `native` feature
 chrono = { version = "0.4", optional = true }
+# The native executor: a current-thread runtime for background mints, whose
+# canister calls need a reactor.
+tokio = { version = "1", features = ["rt", "time", "net"], optional = true }
 futures-timer = "3"
 # `keyring` feature
 keyring = { version = "4.1", optional = true, features = [
@@ -104,7 +107,7 @@ default = ["wasm-js"]
 
 keyring = ["dep:keyring", "dep:keyring-core"]
 pem = ["dep:pkcs8", "ic-agent/pem"]
-native = ["dep:chrono"]
+native = ["dep:chrono", "dep:tokio"]
 tracing = ["dep:tracing"]
 wasm-js = [
     "dep:gloo-timers",

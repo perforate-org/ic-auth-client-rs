@@ -513,17 +513,31 @@ impl AuthClient {
     pub async fn get_identity(&self) -> Result<ClientIdentity, AuthClientError> {
         self.ready().await?;
         self.settle_identity().await?;
-        let holder = self.inner.identity.lock();
-        if matches!(
-            self.get_status(),
-            SessionStatus::SignedIn { .. } | SessionStatus::SignedInElsewhere { .. }
-        ) && !self.inner.is_disposed()
-        {
-            if holder.is_anonymous() {
+        // Cloned out so the rotation below can await without holding the lock.
+        let (identity, session) = {
+            let holder = self.inner.identity.lock();
+            if matches!(
+                self.get_status(),
+                SessionStatus::SignedIn { .. } | SessionStatus::SignedInElsewhere { .. }
+            ) && !self.inner.is_disposed()
+                && holder.is_anonymous()
+            {
                 return Err(AuthClientError::SessionNotHeld);
             }
+            (holder.to_client_identity(), holder.session())
+        };
+        // `ic-agent` signs synchronously, so a caller about to issue requests asks
+        // for an identity first: this is the native equivalent of the browser's
+        // timer, and it is what keeps the 10 s block margin honoured without an
+        // ambient executor. Where a background mint is already due it is awaited
+        // here rather than signed with a delegation the replica would reject.
+        if let Some(session) = session {
+            session
+                .prepare()
+                .await
+                .map_err(|error| AuthClientError::Other(error.to_string()))?;
         }
-        Ok(holder.to_client_identity())
+        Ok(identity)
     }
 
     /// Whether this client is signed in.
@@ -1385,6 +1399,7 @@ impl AuthClient {
             expected_account: held.map(|state| state.principal),
             clock: None,
             scheduler: None,
+            executor: None,
             locks: Some(self.locks.clone()),
         })
         .await?;
@@ -1407,28 +1422,22 @@ impl AuthClient {
         ended: bool,
     ) -> Arc<dyn Listener> {
         let inner = Arc::downgrade(&self.inner);
-        #[cfg(feature = "wasm-js")]
         let state_storage = self.state_storage.clone();
-        #[cfg(feature = "wasm-js")]
         let credential_storage = self.credential_storage.clone();
-        #[cfg(feature = "wasm-js")]
         let slots = self.slots.clone();
         Arc::new(move || {
             if let Some(inner) = inner.upgrade() {
                 *inner.identity.lock() = IdentityHolder::Anonymous;
                 inner.notify();
             }
-            // The record half needs the asynchronous credential store. On native
-            // there is no executor to hand a non-`Send` future to, so the record
-            // and credentials are left for the next restore (a spent credential
-            // is evicted) or a sign-out --- the browser is where this listener
-            // runs for a live session anyway.
-            #[cfg(feature = "wasm-js")]
-            {
-                let state_storage = state_storage.clone();
-                let credential_storage = credential_storage.clone();
-                let slots = slots.clone();
-                crate::client::spawn_background(async move {
+            // The record half needs the asynchronous credential store, which runs
+            // on the platform executor on both targets: the future is `!Send` on
+            // native, so it is built on the executor's thread.
+            let state_storage = state_storage.clone();
+            let credential_storage = credential_storage.clone();
+            let slots = slots.clone();
+            crate::client::platform::spawn(move || {
+                Box::pin(async move {
                     crate::client::session::record::end_or_drop(
                         state_storage,
                         credential_storage,
@@ -1437,10 +1446,8 @@ impl AuthClient {
                         ended,
                     )
                     .await;
-                });
-            }
-            #[cfg(not(feature = "wasm-js"))]
-            let _ = (held, ended);
+                })
+            });
         })
     }
 
@@ -1531,7 +1538,11 @@ impl AuthClient {
             let Some(session) = inner.identity.lock().session() else {
                 return;
             };
-            crate::client::spawn_background(async move { session.refresh().await });
+            crate::client::platform::spawn(move || {
+                Box::pin(async move {
+                    session.refresh().await;
+                })
+            });
         });
 
         let mut hooks: Vec<Box<dyn Unsubscribe>> = Vec::new();
@@ -2477,7 +2488,7 @@ mod tests {
 
         fn account_principal(account: &ic_agent::identity::BasicIdentity) -> Principal {
             use ic_agent::identity::Identity as _;
-            Principal::self_authenticating(&account.public_key().unwrap())
+            Principal::self_authenticating(account.public_key().unwrap())
         }
 
         #[test]
