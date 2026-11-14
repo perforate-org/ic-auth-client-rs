@@ -118,29 +118,44 @@ The pages are stateless apart from `sessionStorage`:
 1. `/auth/` reads `#signer`, `#message`, `#state`, `#callback`, `#port`,
    `#token`, strips the fragment, and refuses a request that is not one
    JSON-RPC object, a signer that is not HTTPS (or loopback), or a callback that
-   is not on its own origin. It stores `{port, token, expectedState}` under one
+   is not on its own origin. It stores `{port, token}` under one
    `sessionStorage` key and `location.replace`s to
    `<signer>#message=<message>&callback=<callback>&state=<state>`.
-2. `/auth/callback` reads `#message` + `#state`, strips the fragment, checks
-   `state` against the attempt's `expectedState`, POSTs `{state, message}` to
-   `http://127.0.0.1:<port>/icrc167` with `Authorization: Bearer <token>`, and
-   then **long-polls** `GET /icrc167/poll` with the same token.
+2. `/auth/callback` reads `#message` + `#state`, strips the fragment, POSTs
+   `{state, message}` to `http://127.0.0.1:<port>/icrc167` with
+   `Authorization: Bearer <token>`, and then **long-polls**
+   `GET /icrc167/poll` with the same token. Each step has its own random
+   `state`; the listener is the authority on which one is in flight (an
+   unmatched state is answered `409`), so the page keeps no state chain.
 3. The poll answers `{"next":{"signer","message","state","callback"}}` when the
    application has another request for this ceremony (an attribute request, a
    notification consent), and `{"done":true}` when none arrives within the
-   application's idle window. On `next` the page updates `expectedState` and
-   navigates the **same tab** again; on `done` it removes the attempt and shows
-   "return to the application".
+   application's idle window. On `next` the page navigates the **same tab**
+   again; on `done` it removes the attempt and shows "return to the
+   application".
 4. A load of `/auth/callback` **without** `message` is not a response (II's
    signer-initiated navigation): the page shows the app instead.
 5. The listener answers the browser's Private Network Access preflight
    (`Access-Control-Allow-Private-Network: true`), because the relay page is a
    public origin calling a loopback port.
+6. **Safari cannot make the cross-scheme POST.** It blocks an https page from
+   reading `http://127.0.0.1` (mixed content; Chrome and Firefox treat
+   loopback as trustworthy), so the callback page falls back to a *navigation*:
+   it `location.replace`s to `http://127.0.0.1:<port>/icrc167/handoff#state=…&message=…&token=…`,
+   where the listener serves a page (`src/client/transport/handoff.html`,
+   embedded with `include_str!`, token in the fragment, no credentials on the
+   GET) that POSTs to its own origin and long-polls for the next step. That
+   page is the same protocol with the same-tab continuation, just served from
+   loopback; the fetched page is never cached. Verified in Safari 27.2 (two
+   steps, one tab).
 
-A page deployed before the polling protocol still works: it answers one request
-and stays on "done", the application's idle window expires and the next request
-opens a fresh tab, which is the pre-phase-5 behaviour. That also covers a tab
-the user closed mid-ceremony, at the cost of re-opening and a fresh consent.
+A page deployed before the hand-off protocol still works: its callback fetch
+fails on Safari, so the ceremony stops there and the application times out; on
+Chrome and Firefox the fetch succeeds and nothing changes. A page deployed
+before the polling protocol answers one request and stays on "done": the
+application's idle window expires and the next request opens a fresh tab, which
+is the pre-phase-5 behaviour, and also covers a tab the user closed mid
+ceremony.
 
 ## 4. Public API
 
@@ -265,7 +280,7 @@ Consequences:
 | Platform | Transport | Sign-in | Notes |
 | --- | --- | --- | --- |
 | Browser (`wasm-js`) | ICRC-29 window / ICRC-167 redirect | unchanged | Not touched. |
-| Desktop with `native_relay` | ICRC-167 via relay page | new | Primary native path. |
+| Desktop with `native_relay` | ICRC-167 via relay page | new | Primary native path. Chrome/Edge/Firefox report over loopback fetch; Safari hands off by navigating to a listener-served page (§3, item 6). |
 | Desktop without `native_relay` | `webauth` (II CLI flow) | unchanged | Fallback; needs the user's CLI-access toggle when deriving. |
 | iOS / macOS app | ICRC-167 via `ASWebAuthenticationSession` (`Callback.https` + associated domains) | stage 5 | Direct deep link, no relay page or loopback. |
 | Android | ICRC-167 via Custom Tabs + App Links | stage 5 | Same shape as iOS. |
@@ -322,16 +337,18 @@ have no verified hand-off.
 | 2 | `NativeRelayOptions`, `default_transport` wiring, UniFFI record | `sign_in` reaches the transport; without options it still uses `webauth` |
 | 3 | Relay page template (`relay/`) + `examples/icrc167-relay` + docs | end-to-end against fake signer in a headless browser |
 | 4 | Rotation on native: `Executor` seam with platform defaults, `current_was_used` fix in the `Identity` implementation, `prepare()` in `get_identity`, `ClientIdentity::refresh()` passthrough, native `sign_out` revoke | native rotates like wasm (default executor), an app that calls `refresh()` keeps it alive, revoke on sign-out |
-| 5 | Multi-step loopback protocol (attributes, notification consent) | two round-trips through one browser tab |
+| 5 | Multi-step loopback protocol (attributes, notification consent) + browser-compatibility hand-off | two round-trips through one browser tab, in Chrome, Firefox and Safari |
 | 6 | Mobile `CallbackBroker` (Swift/Kotlin over UniFFI) | device flow with `ASWebAuthenticationSession` / Custom Tabs |
 
 Phases 1--5 are implemented: the transport, the `native_relay` option, the
 deployable pages in [`relay/`](../../relay/README.md) with a headless-browser
-self-test (`relay/selftest.py`, 6 checks) and
+self-test (`relay/selftest.py`, 7 checks, including the Safari hand-off) and
 [`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md),
 native rotation through a platform executor (§5), and the long-poll continuation
-that keeps one browser tab for a multi-step ceremony (§3). Phase 6 (mobile
-delivery) is next.
+that keeps one browser tab for a multi-step ceremony (§3). Browser behaviour was
+measured on 2026-11-15: Chrome 157 (self-test), Firefox 158.0.1 (loopback fetch
+works, two steps in one tab), Safari 27.2 (fetch blocked as mixed content; the
+hand-off page completes the same two steps). Phase 6 (mobile delivery) is next.
 
 ## 10. Decisions and remaining questions
 

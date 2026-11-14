@@ -175,6 +175,20 @@ pub const RELAY_POLL_PATH: &str = "/icrc167/poll";
 /// polling.
 pub const NEXT_IDLE: Duration = Duration::from_millis(1500);
 
+/// The loopback page a browser hands off to when it cannot read
+/// `http://127.0.0.1` from an https page.
+pub const RELAY_HANDOFF_PATH: &str = "/icrc167/handoff";
+
+/// The hand-off page, served from the loopback origin.
+///
+/// Safari blocks an https page from reading `http://127.0.0.1` (mixed content),
+/// but a top-level navigation to loopback is allowed. The callback page
+/// navigates here instead of failing; this page posts the answer to its own
+/// origin, long-polls for the next step, and navigates the same tab again. The
+/// token rides in the fragment, so the request for the page itself carries no
+/// credentials and there is nothing to cache.
+pub const HANDOFF_PAGE: &str = include_str!("handoff.html");
+
 /// What the relay page sends back to the loopback listener.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallbackPayload {
@@ -608,16 +622,22 @@ fn handle(
         let _ = request.respond(empty_response(204));
         return;
     }
-    if !authorized(&request, token) {
-        let _ = request.respond(empty_response(401));
-        return;
-    }
     let path = request
         .url()
         .split('?')
         .next()
         .unwrap_or_default()
         .to_string();
+    // Static, and the token is in the fragment: no credentials to check, and
+    // fetching it must never be confused with reporting an answer.
+    if request.method() == &tiny_http::Method::Get && path == RELAY_HANDOFF_PATH {
+        let _ = request.respond(html_response(200, HANDOFF_PAGE));
+        return;
+    }
+    if !authorized(&request, token) {
+        let _ = request.respond(empty_response(401));
+        return;
+    }
     match (request.method().clone(), path.as_str()) {
         (tiny_http::Method::Post, RELAY_POST_PATH) => {
             if !has_json_content_type(&request) {
@@ -767,6 +787,13 @@ fn json_response(
             "authorization, content-type",
         ))
         .with_header(header("Access-Control-Allow-Private-Network", "true"))
+        .with_header(header("Cache-Control", "no-store"))
+}
+
+fn html_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_data(body.as_bytes().to_vec())
+        .with_status_code(status)
+        .with_header(header("Content-Type", "text/html; charset=utf-8"))
         .with_header(header("Cache-Control", "no-store"))
 }
 
@@ -1242,6 +1269,35 @@ mod tests {
             }))
         }
 
+        /// A request with no credentials, as a browser makes it for the page.
+        fn fetch_without_credentials(&self, path: &str) -> Result<(u16, String), String> {
+            use std::io::{Read as _, Write as _};
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| error.to_string())?;
+            let request =
+                format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+            stream
+                .write_all(request.as_bytes())
+                .map_err(|error| error.to_string())?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .map_err(|error| error.to_string())?;
+            let status = response
+                .split_whitespace()
+                .nth(1)
+                .and_then(|status| status.parse().ok())
+                .ok_or("unreadable status line")?;
+            let body = response
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_string())
+                .unwrap_or_default();
+            Ok((status, body))
+        }
+
         fn exchange(&self, method: &str, path: &str, body: Option<&str>) -> Result<(), String> {
             let (status, _) = self.exchange_with_response(method, path, body)?;
             if status == 204 {
@@ -1287,6 +1343,81 @@ mod tests {
                 .unwrap_or_default();
             Ok((status, body))
         }
+    }
+
+    struct HandoffBrowser {
+        page: Arc<StdMutex<Option<(u16, String)>>>,
+    }
+
+    impl HandoffBrowser {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                page: Arc::new(StdMutex::new(None)),
+            })
+        }
+    }
+
+    impl BrowserOpener for HandoffBrowser {
+        fn open(&self, url: &str) -> Result<(), String> {
+            let page = self.page.clone();
+            let url = url.to_string();
+            std::thread::spawn(move || {
+                let Ok(navigation) = Navigation::parse(&url) else {
+                    return;
+                };
+                // The browser loads the page itself without credentials: it is
+                // static and the fragment carries the token.
+                if let Ok(response) = navigation.fetch_without_credentials(RELAY_HANDOFF_PATH) {
+                    *page.lock().unwrap() = Some(response);
+                }
+                // Then it does what the page's script does.
+                let Ok(request) = serde_json::from_str::<JsonRpcRequest>(&navigation.message)
+                else {
+                    return;
+                };
+                let id = serde_json::to_value(&request.id).expect("id");
+                let body = json!({ "jsonrpc": "2.0", "id": id, "result": { "ok": true } });
+                let payload = json!({ "state": navigation.state, "message": body.to_string() });
+                if navigation.post(&payload.to_string()).is_err() {
+                    return;
+                }
+                let _ = navigation.poll();
+            });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_handoff_page_is_served_without_credentials() {
+        let browser = HandoffBrowser::new();
+        let transport = NativeUrlTransport::with_broker(
+            options(),
+            Arc::new(LoopbackBroker::with_idle(
+                browser.clone(),
+                Duration::from_millis(500),
+            )),
+        )
+        .expect("a transport");
+        let channel =
+            futures::executor::block_on(transport.establish_channel()).expect("a channel");
+        futures::executor::block_on(channel.send(request())).expect("a delivered request");
+        let (status, page) = browser
+            .page
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the browser fetched the hand-off page");
+        assert_eq!(status, 200);
+        assert!(page.contains(RELAY_POST_PATH), "{page}");
+        assert!(page.contains(RELAY_POLL_PATH), "{page}");
+        futures::executor::block_on(channel.close()).expect("close");
+    }
+
+    #[test]
+    fn the_handoff_page_posts_and_polls_the_loopback() {
+        assert!(HANDOFF_PAGE.contains(RELAY_POST_PATH));
+        assert!(HANDOFF_PAGE.contains(RELAY_POLL_PATH));
+        assert!(HANDOFF_PAGE.contains("Authorization"));
     }
 
     fn loopback_transport(

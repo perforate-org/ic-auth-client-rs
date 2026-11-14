@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Finishing the sign-in…</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.6 system-ui, -apple-system, sans-serif; max-width: 32rem; margin: 20vh auto 0; padding: 0 1rem; text-align: center; }
+    h1 { font-size: 1.05rem; font-weight: 600; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+<h1 id="status">Finishing the sign-in…</h1>
+<p>You can close this tab when the application is signed in.</p>
+<script>
+// The loopback hand-off: Safari blocks an https page from reading
+// http://127.0.0.1 (mixed content), but a top-level navigation to loopback is
+// allowed. The callback page navigates here with the signer's answer in the
+// fragment; this page posts it to its own origin and long-polls for the next
+// step of the ceremony, navigating the same tab again when there is one.
+//
+// The application serves this page, so it is not a hosted file: it ships inside
+// the listener and only ever runs on 127.0.0.1.
+(() => {
+  const status = document.getElementById("status");
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ""));
+  // Take the answer out of history before doing anything with it.
+  history.replaceState(null, "", location.pathname);
+
+  const message = fragment.get("message");
+  const state = fragment.get("state");
+  const token = fragment.get("token");
+  if (!message || !state || !token) {
+    return void (status.textContent = "This page is the sign-in hand-off.");
+  }
+  const authorization = "Bearer " + token;
+
+  const next = async () => {
+    // Long-poll: the application holds this request until either another step
+    // is ready or this ceremony is done.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+    try {
+      const response = await fetch("/icrc167/poll", {
+        cache: "no-store",
+        headers: { Authorization: authorization },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        return void (status.textContent = "The application stopped waiting for this sign-in.");
+      }
+      const body = await response.json();
+      if (body.next) {
+        const target = new URL(body.next.signer);
+        target.hash = new URLSearchParams({
+          message: body.next.message,
+          callback: body.next.callback,
+          state: body.next.state,
+        }).toString();
+        location.replace(target.toString());
+        return;
+      }
+      status.textContent = "Done. Return to the application.";
+    } catch {
+      clearTimeout(timer);
+      status.textContent = "The application stopped waiting for this sign-in.";
+    }
+  };
+
+  fetch("/icrc167", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: authorization,
+    },
+    body: JSON.stringify({ state, message }),
+  })
+    .then((response) => {
+      if (response.status === 409) {
+        return void (status.textContent = "The application is no longer waiting for this sign-in.");
+      }
+      if (!response.ok) {
+        return void (status.textContent = "The application refused the answer.");
+      }
+      return next();
+    })
+    .catch(() => {
+      status.textContent = "The application is not listening.";
+    });
+})();
+</script>
+</body>
+</html>

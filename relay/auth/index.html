@@ -78,11 +78,10 @@
 
   // The loopback port and token never reach the signer: they are ours. One
   // record follows the whole ceremony, because later steps navigate from the
-  // callback page rather than from here.
-  sessionStorage.setItem(
-    "icrc167.attempt",
-    JSON.stringify({ port, token, expectedState: state }),
-  );
+  // callback page rather than from here. The state itself is not remembered:
+  // every step gets its own, and the listener is the authority on which one is
+  // still in flight.
+  sessionStorage.setItem("icrc167.attempt", JSON.stringify({ port, token }));
 
   const target = new URL(signerUrl.toString());
   target.hash = new URLSearchParams({ message, callback, state }).toString();

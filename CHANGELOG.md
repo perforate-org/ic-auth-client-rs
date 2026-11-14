@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Safari could not complete a native ICRC-167 sign-in.** Safari blocks an
+  https page from reading `http://127.0.0.1` (mixed content; Chrome and Firefox
+  treat loopback as trustworthy), so the callback page's report never left the
+  browser. The callback page now falls back to handing the answer off by
+  navigation: the listener serves a small page (`/icrc167/handoff`, embedded
+  with `include_str!`) that reports to its own origin and keeps the same-tab
+  continuation for multi-step ceremonies. Chrome and Firefox keep the direct
+  fetch path; the relay pages deploy unchanged.
+
+### Changed
+
+- The relay pages no longer track a single-use `state` per tab: every step of a
+  ceremony has its own, and the loopback listener refuses a state it is not
+  waiting for (`409`), which also covers the hand-off step. Pages and crate
+  should be deployed together.
+
 ## [0.49.2] - 2026-11-14
 
 ### Added
