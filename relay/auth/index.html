@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signing in…</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.6 system-ui, -apple-system, sans-serif; max-width: 32rem; margin: 20vh auto 0; padding: 0 1rem; text-align: center; }
+    h1 { font-size: 1.05rem; font-weight: 600; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+<h1 id="status">Preparing the sign-in…</h1>
+<p>You will be returned here when the provider is done.</p>
+<script>
+// The ICRC-167 relay page: the native application opens this page with the
+// request in the fragment, and this page carries it to the signer. The signer
+// returns to /auth/callback, which hands the answer to the application over a
+// loopback listener.
+//
+// This page is a transport, not an application: it holds no keys, and the only
+// thing it keeps is the loopback port and token, in this tab's sessionStorage.
+(() => {
+  const status = document.getElementById("status");
+  const fail = (message) => {
+    status.textContent = message;
+  };
+
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ""));
+  // The fragment is the message: strip it from history before doing anything.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const signer = fragment.get("signer");
+  const message = fragment.get("message");
+  const state = fragment.get("state");
+  const callback = fragment.get("callback");
+  const port = fragment.get("port");
+  const token = fragment.get("token");
+  if (!signer || !message || !state || !callback || !port || !token) {
+    return fail("This page is opened by the application, not by hand.");
+  }
+
+  let request;
+  let signerUrl;
+  let callbackUrl;
+  try {
+    request = JSON.parse(message);
+    signerUrl = new URL(signer);
+    callbackUrl = new URL(callback);
+  } catch {
+    return fail("The request could not be read.");
+  }
+
+  // One request per navigation: the signer does not answer batches.
+  if (
+    Array.isArray(request) ||
+    request === null ||
+    typeof request !== "object" ||
+    request.jsonrpc !== "2.0" ||
+    typeof request.method !== "string"
+  ) {
+    return fail("This relay carries one ICRC-167 request at a time.");
+  }
+
+  // Only a verified HTTPS signer (or a loopback one during development).
+  const loopbackSigner =
+    signerUrl.hostname === "localhost" || signerUrl.hostname === "127.0.0.1";
+  if (signerUrl.protocol !== "https:" && !loopbackSigner) {
+    return fail("The signer must be an HTTPS URL.");
+  }
+  // The application's callback is on this relay's own origin; anything else
+  // would be a different relying party than the one the user sees here.
+  if (callbackUrl.origin !== location.origin) {
+    return fail("The callback must be on this relay's origin.");
+  }
+
+  // The loopback port and token never reach the signer: they are ours.
+  sessionStorage.setItem("icrc167:" + state, JSON.stringify({ port, token }));
+
+  const target = new URL(signerUrl.toString());
+  target.hash = new URLSearchParams({ message, callback, state }).toString();
+  location.replace(target.toString());
+})();
+</script>
+</body>
+</html>

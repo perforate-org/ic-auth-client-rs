@@ -71,3 +71,8 @@ clean-example-builds:
 # protocol helpers; the browser flow is exercised by browser-selftest.py.
 probe-test:
 	node --test probes/icrc167/selftest.mjs
+
+# End-to-end check of the relay pages in a headless browser. Needs a ChromeDriver
+# matching the installed Chrome: make relay-test CHROMEDRIVER=/path/to/chromedriver
+relay-test:
+	python3 relay/selftest.py $(if $(CHROMEDRIVER),--chromedriver $(CHROMEDRIVER),)

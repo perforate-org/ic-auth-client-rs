@@ -115,15 +115,22 @@ Building blocks:
 
 The page is stateless apart from `sessionStorage`:
 
-1. `/auth/` reads `#signer`, `#message`, `#state`, `#port`, `#token`, stores them
-   in `sessionStorage`, strips the fragment, then `location.replace`s to
-   `<signer>#message=<message>&callback=<origin>/auth/callback&state=<state>`.
-2. `/auth/callback` reads `#message` + `#state`, strips the fragment, POSTs
+1. `/auth/` reads `#signer`, `#message`, `#state`, `#callback`, `#port`,
+   `#token`, strips the fragment, and refuses a request that is not one
+   `icrc34_delegation`-shaped JSON-RPC object, a signer that is not HTTPS (or
+   loopback), or a callback that is not on its own origin. It then stores
+   `{port, token}` in `sessionStorage` keyed by `state` and `location.replace`s
+   to `<signer>#message=<message>&callback=<callback>&state=<state>`.
+2. `/auth/callback` reads `#message` + `#state`, strips the fragment, looks the
+   attempt up by `state`, **removes it** (single use), POSTs
    `{state, message}` to `http://127.0.0.1:<port>/icrc167` with
    `Authorization: Bearer <token>`, and renders "Return to the application".
 3. A load of `/auth/callback` **without** `message` is not a response (II's
    signer-initiated navigation): the page starts a fresh interaction or shows
    the app.
+4. The listener answers the browser's Private Network Access preflight
+   (`Access-Control-Allow-Private-Network: true`), because the relay page is a
+   public origin calling a loopback port.
 
 Stage 4 extends the same channel for multi-step flows: the loopback response to
 the POST carries the next `{signer, message, state}`, and the page navigates
@@ -304,6 +311,12 @@ have no verified hand-off.
 | 4 | Rotation on native: `Executor` seam with platform defaults, `current_was_used` fix in the `Identity` implementation, `prepare()` in `get_identity`, `ClientIdentity::refresh()` passthrough, native `sign_out` revoke | native rotates like wasm (default executor), an app that calls `refresh()` keeps it alive, revoke on sign-out |
 | 5 | Multi-step loopback protocol (attributes, notification consent) | two round-trips through one browser tab |
 | 6 | Mobile `CallbackBroker` (Swift/Kotlin over UniFFI) | device flow with `ASWebAuthenticationSession` / Custom Tabs |
+
+Phases 1--3 are implemented: the transport and its unit tests, the
+`native_relay` option and its validation, and the deployable pages in
+[`relay/`](../../relay/README.md) with a headless-browser self-test
+(`relay/selftest.py`, 5 checks) plus [`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md).
+Phase 4 (rotation) is next.
 
 ## 10. Decisions and remaining questions
 

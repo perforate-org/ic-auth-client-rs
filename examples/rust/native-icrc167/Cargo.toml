@@ -1,0 +1,12 @@
+[package]
+name = "native-icrc167"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ic-auth-client = { path = "../../..", default-features = false, features = [
+    "native",
+    "keyring",
+] }
+tokio = { version = "1", features = ["rt", "macros"] }

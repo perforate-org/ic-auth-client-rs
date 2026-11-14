@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signing in…</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.6 system-ui, -apple-system, sans-serif; max-width: 32rem; margin: 20vh auto 0; padding: 0 1rem; text-align: center; }
+    h1 { font-size: 1.05rem; font-weight: 600; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+<h1 id="status">Finishing the sign-in…</h1>
+<p>You can close this tab when the application is signed in.</p>
+<script>
+// The ICRC-167 callback: the signer navigated here with its answer in the
+// fragment. This page hands that answer to the native application's loopback
+// listener, using the port and token the relay page stored for this attempt.
+(() => {
+  const status = document.getElementById("status");
+  const fail = (message) => {
+    status.textContent = message;
+  };
+
+  const fragment = new URLSearchParams(location.hash.replace(/^#/, ""));
+  // Take the message out of history and the referrer before anything else.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const message = fragment.get("message");
+  const state = fragment.get("state");
+  if (!message) {
+    // A signer-initiated navigation, not an answer: nothing to deliver.
+    return fail("This page is the sign-in callback.");
+  }
+  if (!state) {
+    return fail("The signer did not return the request state.");
+  }
+
+  const key = "icrc167:" + state;
+  const pending = sessionStorage.getItem(key);
+  // Single use: the attempt is over either way.
+  sessionStorage.removeItem(key);
+  if (!pending) {
+    return fail("This sign-in did not start in this tab.");
+  }
+
+  let port;
+  let token;
+  try {
+    ({ port, token } = JSON.parse(pending));
+  } catch {
+    return fail("This sign-in could not be read.");
+  }
+
+  fetch("http://127.0.0.1:" + encodeURIComponent(port) + "/icrc167", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + token,
+    },
+    body: JSON.stringify({ state, message }),
+  })
+    .then((response) => {
+      if (!response.ok && response.status !== 0) {
+        fail("The application refused the answer; return to it and try again.");
+        return;
+      }
+      status.textContent = "Done. Return to the application.";
+    })
+    .catch(() => {
+      fail("The application is not listening; return to it and try again.");
+    });
+})();
+</script>
+</body>
+</html>

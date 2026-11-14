@@ -73,8 +73,8 @@ pub use error::{AuthClientError, AuthClientErrorKind};
 pub use identity::ClientIdentity;
 pub use options::{
     AuthClientCreateOptions, IDENTITY_CANISTER_DEFAULT, IDENTITY_PROVIDER_DEFAULT,
-    IdentityProvider, NotificationConsentStatus, OpenIdProvider, Prompt, SessionStatus,
-    SignInOptions, SignOutOptions, SignedAttributes, SsoStatus, TransportMode,
+    IdentityProvider, NativeRelayOptions, NotificationConsentStatus, OpenIdProvider, Prompt,
+    SessionStatus, SignInOptions, SignOutOptions, SignedAttributes, SsoStatus, TransportMode,
 };
 pub use slots::{Slots, slots_for};
 #[cfg(feature = "native")]
