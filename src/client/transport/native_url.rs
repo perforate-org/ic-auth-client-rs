@@ -161,6 +161,20 @@ impl UrlPathExt for url::Url {
     }
 }
 
+use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
+
+use serde_json::json;
+
+/// The relay page's polling endpoint: the page asks for the next request.
+pub const RELAY_POLL_PATH: &str = "/icrc167/poll";
+
+/// How long a page waits for another request before it is told the ceremony is
+/// over. This is the gap between two steps of one ceremony, not a user's think
+/// time: the page has already answered the previous step when it starts
+/// polling.
+pub const NEXT_IDLE: Duration = Duration::from_millis(1500);
+
 /// What the relay page sends back to the loopback listener.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallbackPayload {
@@ -170,13 +184,13 @@ pub struct CallbackPayload {
     pub state: Option<String>,
 }
 
-/// One navigation to run: everything the broker needs to deliver a request to
-/// the signer and bring its answer back.
+/// One navigation to run: everything a delivery session needs to carry a
+/// request to the signer and bring its answer back.
 #[derive(Debug, Clone)]
 pub struct RelayRequest {
     /// The signer URL, fragment-free.
     pub signer_url: String,
-    /// The relay page to open.
+    /// The relay page to open on the first navigation.
     pub page_url: url::Url,
     /// The callback to declare to the signer.
     pub callback_url: url::Url,
@@ -184,24 +198,37 @@ pub struct RelayRequest {
     pub message: String,
     /// The single-use state to send and check.
     pub state: String,
-    /// How long the navigation may take.
+    /// How long this step may take.
     pub timeout: Duration,
 }
 
-/// Runs one navigation and returns what the relay page received.
+/// One browser tab, several navigations.
 ///
-/// The default is [`LoopbackBroker`]; tests and embedded-webview hosts supply
-/// their own. Asynchronous and `!Send` because it awaits a page that lives
-/// outside this process.
+/// A delivery session is opened once per channel. The first request opens the
+/// relay page; every later request of the same channel is handed to the page
+/// that is already waiting, so a multi-step ceremony does not flash a new tab
+/// per step.
 #[async_trait(?Send)]
-pub trait CallbackBroker: PlatformBounds {
-    /// Opens the relay page for `request` and waits for its answer.
+pub trait CallbackDelivery: PlatformBounds {
+    /// Delivers one request through the page and waits for its answer.
     async fn deliver(&self, request: RelayRequest) -> Result<CallbackPayload, SignerError>;
+    /// Stops the session, releasing the loopback port and failing waiters.
+    fn close(&self);
+}
+
+/// A delivery session behind an `Arc`.
+pub type SharedDelivery = Arc<dyn CallbackDelivery>;
+
+/// Opens delivery sessions.
+pub trait CallbackBroker: PlatformBounds {
+    /// Opens a session bound to the transport's options.
+    fn open(&self, options: &NativeUrlTransportOptions) -> Result<SharedDelivery, SignerError>;
 }
 
 /// The default broker: the system browser plus a loopback listener.
 pub struct LoopbackBroker {
     opener: Arc<dyn BrowserOpener>,
+    idle: Duration,
 }
 
 impl LoopbackBroker {
@@ -209,13 +236,22 @@ impl LoopbackBroker {
     pub fn new() -> Self {
         Self {
             opener: Arc::new(SystemBrowser),
+            idle: NEXT_IDLE,
         }
     }
 
     /// A broker with another way of opening the page, for tests and for hosts
     /// that drive their own browser window.
     pub fn with_opener(opener: Arc<dyn BrowserOpener>) -> Self {
-        Self { opener }
+        Self {
+            opener,
+            idle: NEXT_IDLE,
+        }
+    }
+
+    /// A broker with another way of opening the page and another idle window.
+    pub fn with_idle(opener: Arc<dyn BrowserOpener>, idle: Duration) -> Self {
+        Self { opener, idle }
     }
 }
 
@@ -227,14 +263,15 @@ impl Default for LoopbackBroker {
 
 impl std::fmt::Debug for LoopbackBroker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoopbackBroker").finish_non_exhaustive()
+        f.debug_struct("LoopbackBroker")
+            .field("idle", &self.idle)
+            .finish_non_exhaustive()
     }
 }
 
-#[async_trait(?Send)]
 impl CallbackBroker for LoopbackBroker {
-    async fn deliver(&self, request: RelayRequest) -> Result<CallbackPayload, SignerError> {
-        // Bind before the URL is built: the page has to know the port.
+    fn open(&self, _options: &NativeUrlTransportOptions) -> Result<SharedDelivery, SignerError> {
+        // Bound before anything else: the port is part of the page's fragment.
         let server = tiny_http::Server::http("127.0.0.1:0").map_err(|error| {
             SignerError::Transport(format!("could not bind the relay listener: {error}"))
         })?;
@@ -246,10 +283,83 @@ impl CallbackBroker for LoopbackBroker {
             })?
             .port();
 
+        let state = Arc::new(StdMutex::new(SessionState::new()));
+        let shutdown = Arc::new(AtomicBool::new(false));
         let token = base64_url_no_pad(&random_bytes());
 
-        // The fragment carries the signer URL and the request itself. Neither
-        // the relay page's server nor the signer's backend sees the fragment.
+        let serving_state = state.clone();
+        let serving_shutdown = shutdown.clone();
+        let serving_token = token.clone();
+        let idle = self.idle;
+        let thread = std::thread::Builder::new()
+            .name("ic-auth-client-relay".to_string())
+            .spawn(move || {
+                serve(
+                    server,
+                    &serving_token,
+                    serving_state,
+                    serving_shutdown,
+                    idle,
+                )
+            })
+            .map_err(|error| {
+                SignerError::Transport(format!("could not start the relay listener: {error}"))
+            })?;
+
+        Ok(Arc::new(LoopbackDelivery {
+            state,
+            shutdown,
+            thread: StdMutex::new(Some(thread)),
+            opener: self.opener.clone(),
+            port,
+            token,
+            grace: self.idle,
+        }))
+    }
+}
+
+struct SessionState {
+    /// A request the page has not picked up yet.
+    next: Option<RelayRequest>,
+    /// The page's held long-poll, waiting for `next` or an idle "done".
+    held_poll: Option<tiny_http::Request>,
+    /// One waiter per request, keyed by its state.
+    waiters:
+        HashMap<String, futures::channel::oneshot::Sender<Result<CallbackPayload, SignerError>>>,
+    /// When a request or an answer last moved, for the idle decision.
+    last_activity: Instant,
+    /// Whether a page from this session is still around to take another
+    /// request. Cleared when a page is told "done" or the session closes.
+    page_alive: bool,
+}
+
+impl SessionState {
+    fn new() -> Self {
+        Self {
+            next: None,
+            held_poll: None,
+            waiters: HashMap::new(),
+            last_activity: Instant::now(),
+            page_alive: false,
+        }
+    }
+}
+
+struct LoopbackDelivery {
+    state: Arc<StdMutex<SessionState>>,
+    shutdown: Arc<AtomicBool>,
+    thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
+    opener: Arc<dyn BrowserOpener>,
+    port: u16,
+    token: String,
+    /// How long a request waits for an already-open page to pick it up before
+    /// the session falls back to opening a new page.
+    grace: Duration,
+}
+
+impl LoopbackDelivery {
+    /// The relay page URL carrying one request's fragment.
+    fn navigation_url(&self, request: &RelayRequest) -> String {
         let mut page = request.page_url.clone();
         page.set_fragment(Some(
             &url::form_urlencoded::Serializer::new(String::new())
@@ -257,114 +367,361 @@ impl CallbackBroker for LoopbackBroker {
                 .append_pair("message", &request.message)
                 .append_pair("state", &request.state)
                 .append_pair("callback", request.callback_url.as_str())
-                .append_pair("port", &port.to_string())
-                .append_pair("token", &token)
+                .append_pair("port", &self.port.to_string())
+                .append_pair("token", &self.token)
                 .finish(),
         ));
+        page.to_string()
+    }
+}
 
-        let deadline = Instant::now() + request.timeout;
-        let shutdown = Arc::new(AtomicBool::new(false));
+impl Drop for LoopbackDelivery {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[async_trait(?Send)]
+impl CallbackDelivery for LoopbackDelivery {
+    async fn deliver(&self, request: RelayRequest) -> Result<CallbackPayload, SignerError> {
         let (sender, receiver) = futures::channel::oneshot::channel();
-        let serving_shutdown = shutdown.clone();
-        let serving_token = token.clone();
-        std::thread::spawn(move || {
-            let _ = sender.send(serve(server, deadline, &serving_token, &serving_shutdown));
-        });
+        let open = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| SignerError::Transport("the relay session is poisoned".to_string()))?;
+            if state.waiters.contains_key(&request.state) {
+                return Err(SignerError::Transport(
+                    "the same request state is already in flight".to_string(),
+                ));
+            }
+            state.waiters.insert(request.state.clone(), sender);
+            if state.page_alive {
+                // A page from this session is waiting: it will pick this up on
+                // its poll. A page that has since gone away is covered by the
+                // grace period below.
+                if state.next.is_some() {
+                    state.waiters.remove(&request.state);
+                    return Err(SignerError::Transport(
+                        "a request is already queued for the page".to_string(),
+                    ));
+                }
+                match state.held_poll.take() {
+                    // The page is holding a poll right now: answer it with the
+                    // next navigation instead of waiting for it to ask again.
+                    Some(poll) => {
+                        state.last_activity = Instant::now();
+                        respond_next(poll, &request);
+                    }
+                    None => {
+                        state.next = Some(request.clone());
+                        state.last_activity = Instant::now();
+                    }
+                }
+                None
+            } else {
+                state.page_alive = true;
+                state.last_activity = Instant::now();
+                Some(self.navigation_url(&request))
+            }
+        };
 
-        match self.opener.open(page.as_str()) {
-            Ok(()) => {}
-            Err(error) => {
-                shutdown.store(true, Ordering::SeqCst);
+        if let Some(url) = open {
+            if let Err(error) = self.opener.open(url.as_str()) {
+                self.remove_waiter(&request.state);
+                return Err(SignerError::Transport(format!(
+                    "could not open the browser on the relay page: {error}"
+                )));
+            }
+            return self.wait_payload(Box::pin(receiver), &request).await;
+        }
+
+        // The page was believed to be there; give it a moment to pick the
+        // request up. A closed tab must not turn into a multi-minute wait.
+        let grace = Box::pin(futures_timer::Delay::new(self.grace));
+        let receiver = match futures::future::select(Box::pin(receiver), grace).await {
+            futures::future::Either::Left((result, _)) => return finish_payload(result),
+            futures::future::Either::Right((_, receiver)) => receiver,
+        };
+
+        let still_queued = {
+            let Ok(mut state) = self.state.lock() else {
+                self.remove_waiter(&request.state);
+                return Err(SignerError::Transport(
+                    "the relay session is poisoned".to_string(),
+                ));
+            };
+            if state
+                .next
+                .as_ref()
+                .is_some_and(|queued| queued.state == request.state)
+            {
+                state.next = None;
+                true
+            } else {
+                false
+            }
+        };
+        if still_queued {
+            let url = self.navigation_url(&request);
+            if let Err(error) = self.opener.open(url.as_str()) {
+                self.remove_waiter(&request.state);
                 return Err(SignerError::Transport(format!(
                     "could not open the browser on the relay page: {error}"
                 )));
             }
         }
+        self.wait_payload(receiver, &request).await
+    }
 
-        match receiver.await {
-            Ok(result) => result,
-            Err(_) => Err(SignerError::ChannelClosed),
+    fn close(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let thread = self.thread.lock().ok().and_then(|mut thread| thread.take());
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.next = None;
+            state.page_alive = false;
+            for (_, sender) in state.waiters.drain() {
+                let _ = sender.send(Err(SignerError::ChannelClosed));
+            }
         }
     }
 }
 
-/// The loopback half: accepts exactly one relay POST, and only with the token
-/// the page was given.
+impl LoopbackDelivery {
+    fn remove_waiter(&self, state_key: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.waiters.remove(state_key);
+        }
+    }
+
+    async fn wait_payload(
+        &self,
+        receiver: std::pin::Pin<
+            Box<futures::channel::oneshot::Receiver<Result<CallbackPayload, SignerError>>>,
+        >,
+        request: &RelayRequest,
+    ) -> Result<CallbackPayload, SignerError> {
+        let delay = Box::pin(futures_timer::Delay::new(request.timeout));
+        match futures::future::select(receiver, delay).await {
+            futures::future::Either::Left((result, _)) => finish_payload(result),
+            futures::future::Either::Right(_) => {
+                self.remove_waiter(&request.state);
+                Err(SignerError::Timeout)
+            }
+        }
+    }
+}
+
+/// Turns the oneshot result into the delivery result.
+fn finish_payload(
+    result: Result<Result<CallbackPayload, SignerError>, futures::channel::oneshot::Canceled>,
+) -> Result<CallbackPayload, SignerError> {
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(SignerError::ChannelClosed),
+    }
+}
+
+/// The body that hands the page the next navigation of this ceremony.
+fn next_body(request: &RelayRequest) -> serde_json::Value {
+    json!({
+        "next": {
+            "signer": request.signer_url,
+            "message": request.message,
+            "state": request.state,
+            "callback": request.callback_url.as_str(),
+        }
+    })
+}
+
+/// Answers a held poll with the next navigation.
+fn respond_next(poll: tiny_http::Request, request: &RelayRequest) {
+    let _ = poll.respond(json_response(200, &next_body(request)));
+}
+
+/// The loopback half: one request at a time, and only from the page holding the
+/// token this session was opened with.
 fn serve(
     server: tiny_http::Server,
-    deadline: Instant,
     token: &str,
-    shutdown: &AtomicBool,
-) -> Result<CallbackPayload, SignerError> {
+    state: Arc<StdMutex<SessionState>>,
+    shutdown: Arc<AtomicBool>,
+    idle: Duration,
+) {
     loop {
         if shutdown.load(Ordering::SeqCst) {
-            return Err(SignerError::ChannelClosed);
+            break;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(SignerError::Timeout);
-        }
-        // Wake up regularly so an abandoned flow (browser failed to open, or the
-        // caller went away) does not keep this thread for the whole timeout.
-        let slice = remaining.min(Duration::from_millis(200));
+        // Release a poll the page is holding once no next request has arrived.
+        let released = if let Ok(mut guard) = state.lock() {
+            match guard.held_poll.take() {
+                Some(poll) if Instant::now().duration_since(guard.last_activity) >= idle => {
+                    let _ = poll.respond(json_response(200, &json!({ "done": true })));
+                    guard.page_alive = false;
+                    true
+                }
+                Some(poll) => {
+                    guard.held_poll = Some(poll);
+                    false
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+        let slice = if released {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_millis(100)
+        };
         match server.recv_timeout(slice) {
             Ok(None) => continue,
-            Ok(Some(request)) => {
-                if let Some(payload) = handle(request, token) {
-                    return Ok(payload);
-                }
-            }
-            Err(error) => {
-                return Err(SignerError::Transport(format!(
-                    "the relay listener failed: {error}"
-                )));
-            }
+            Ok(Some(request)) => handle(request, token, &state, idle),
+            Err(_) => break,
+        }
+    }
+
+    // Fail everything still outstanding: the session is over.
+    if let Ok(mut guard) = state.lock() {
+        if let Some(poll) = guard.held_poll.take() {
+            let _ = poll.respond(json_response(200, &json!({ "done": true })));
+        }
+        guard.next = None;
+        guard.page_alive = false;
+        for (_, sender) in guard.waiters.drain() {
+            let _ = sender.send(Err(SignerError::ChannelClosed));
         }
     }
 }
 
 /// Answers one HTTP request on the loopback listener.
-///
-/// Returns the payload only for the relay page's authenticated POST; anything
-/// else is answered and ignored, because the port is reachable by any process
-/// on the machine while the flow runs.
-fn handle(mut request: tiny_http::Request, token: &str) -> Option<CallbackPayload> {
+fn handle(
+    mut request: tiny_http::Request,
+    token: &str,
+    state: &Arc<StdMutex<SessionState>>,
+    idle: Duration,
+) {
     if request.method() == &tiny_http::Method::Options {
-        let _ = request.respond(cors(204));
-        return None;
+        let _ = request.respond(empty_response(204));
+        return;
     }
-    if request.method() != &tiny_http::Method::Post || request.url() != RELAY_POST_PATH {
-        let _ = request.respond(tiny_http::Response::empty(404));
-        return None;
+    if !authorized(&request, token) {
+        let _ = request.respond(empty_response(401));
+        return;
     }
+    let path = request
+        .url()
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    match (request.method().clone(), path.as_str()) {
+        (tiny_http::Method::Post, RELAY_POST_PATH) => {
+            if !has_json_content_type(&request) {
+                let _ = request.respond(empty_response(415));
+                return;
+            }
+            let Some(body) = read_body(&mut request) else {
+                let _ = request.respond(empty_response(400));
+                return;
+            };
+            let Ok(payload) = serde_json::from_slice::<CallbackPayload>(&body) else {
+                let _ = request.respond(empty_response(400));
+                return;
+            };
+            let sender = {
+                let Ok(mut guard) = state.lock() else {
+                    let _ = request.respond(empty_response(500));
+                    return;
+                };
+                let Some(st) = payload.state.clone() else {
+                    let _ = request.respond(empty_response(400));
+                    return;
+                };
+                let sender = guard.waiters.remove(&st);
+                if sender.is_some() {
+                    guard.last_activity = Instant::now();
+                    guard.page_alive = true;
+                }
+                sender
+            };
+            match sender {
+                Some(sender) => {
+                    let _ = sender.send(Ok(payload));
+                    let _ = request.respond(empty_response(204));
+                }
+                // A page from an earlier session (or a forged post): nothing is
+                // waiting for this state.
+                None => {
+                    let _ = request.respond(empty_response(409));
+                }
+            }
+        }
+        (tiny_http::Method::Get, RELAY_POLL_PATH) => {
+            let next = {
+                let Ok(mut guard) = state.lock() else {
+                    let _ = request.respond(empty_response(500));
+                    return;
+                };
+                match guard.next.take() {
+                    Some(next) => {
+                        guard.last_activity = Instant::now();
+                        guard.page_alive = true;
+                        Some(next)
+                    }
+                    None => {
+                        if Instant::now().duration_since(guard.last_activity) >= idle {
+                            guard.page_alive = false;
+                            None
+                        } else {
+                            guard.page_alive = true;
+                            // Hold the poll; `serve` releases it with done.
+                            if let Some(stale) = guard.held_poll.replace(request) {
+                                let _ = stale.respond(json_response(200, &json!({ "done": true })));
+                            }
+                            return;
+                        }
+                    }
+                }
+            };
+            match next {
+                Some(next) => {
+                    let _ = request.respond(json_response(200, &next_body(&next)));
+                }
+                None => {
+                    let _ = request.respond(json_response(200, &json!({ "done": true })));
+                }
+            }
+        }
+        _ => {
+            let _ = request.respond(empty_response(404));
+        }
+    }
+}
 
-    let content_type = request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv("Content-Type"))
-        .map(|header| header.value.as_str().to_owned());
-    if !content_type
-        .as_deref()
-        .is_some_and(|value| value.starts_with("application/json"))
-    {
-        let _ = request.respond(tiny_http::Response::empty(415));
-        return None;
-    }
-
-    let authorization = request
+fn authorized(request: &tiny_http::Request, token: &str) -> bool {
+    let expected = format!("Bearer {token}");
+    request
         .headers()
         .iter()
         .find(|header| header.field.equiv("Authorization"))
-        .map(|header| header.value.as_str().to_owned());
-    let expected = format!("Bearer {token}");
-    let authorized = authorization
-        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()));
-    if !authorized {
-        let _ = request.respond(tiny_http::Response::empty(401));
-        return None;
-    }
+        .map(|header| header.value.as_str().to_owned())
+        .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()))
+}
 
-    // Bounded, because this port is open to anything on the machine.
+fn has_json_content_type(request: &tiny_http::Request) -> bool {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Content-Type"))
+        .map(|header| header.value.as_str().to_owned())
+        .is_some_and(|value| value.starts_with("application/json"))
+}
+
+fn read_body(request: &mut tiny_http::Request) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     let mut buffer = [0u8; 8 * 1024];
     let reader = request.as_reader();
@@ -373,42 +730,50 @@ fn handle(mut request: tiny_http::Request, token: &str) -> Option<CallbackPayloa
             Ok(0) => break,
             Ok(read) => {
                 if body.len() as u64 + read as u64 > MAX_BODY_BYTES as u64 {
-                    let _ = request.respond(tiny_http::Response::empty(413));
                     return None;
                 }
                 body.extend_from_slice(&buffer[..read]);
             }
-            Err(_) => break,
+            Err(_) => return None,
         }
     }
-
-    let payload = match serde_json::from_slice::<CallbackPayload>(&body) {
-        Ok(payload) => payload,
-        Err(_) => {
-            let _ = request.respond(tiny_http::Response::empty(400));
-            return None;
-        }
-    };
-    let _ = request.respond(cors(204));
-    Some(payload)
+    Some(body)
 }
 
-fn cors(status: u16) -> tiny_http::Response<std::io::Empty> {
+fn empty_response(status: u16) -> tiny_http::Response<std::io::Empty> {
     tiny_http::Response::empty(status)
         .with_header(header("Access-Control-Allow-Origin", "*"))
-        .with_header(header("Access-Control-Allow-Methods", "POST, OPTIONS"))
+        .with_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"))
         .with_header(header(
             "Access-Control-Allow-Headers",
             "authorization, content-type",
         ))
-        .with_header(header("Access-Control-Max-Age", "600"))
+        .with_header(header("Access-Control-Allow-Private-Network", "true"))
+        .with_header(header("Cache-Control", "no-store"))
+}
+
+fn json_response(
+    status: u16,
+    body: &serde_json::Value,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let bytes = body.to_string().into_bytes();
+    tiny_http::Response::from_data(bytes)
+        .with_status_code(status)
+        .with_header(header("Content-Type", "application/json"))
+        .with_header(header("Access-Control-Allow-Origin", "*"))
+        .with_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"))
+        .with_header(header(
+            "Access-Control-Allow-Headers",
+            "authorization, content-type",
+        ))
+        .with_header(header("Access-Control-Allow-Private-Network", "true"))
+        .with_header(header("Cache-Control", "no-store"))
 }
 
 fn header(name: &str, value: &str) -> tiny_http::Header {
     tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("static header")
 }
 
-/// Compares two byte strings without leaking where they differ.
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -466,8 +831,13 @@ impl std::fmt::Debug for NativeUrlTransport {
 #[async_trait(?Send)]
 impl Transport for NativeUrlTransport {
     async fn establish_channel(&self) -> Result<SharedChannel, SignerError> {
+        let delivery = self
+            .broker
+            .open(&self.options)
+            .map_err(|error| SignerError::Transport(error.to_string()))?;
         Ok(Arc::new(NativeUrlChannel {
             transport: self.clone(),
+            delivery,
             closed: AtomicBool::new(false),
         }))
     }
@@ -475,6 +845,7 @@ impl Transport for NativeUrlTransport {
 
 struct NativeUrlChannel {
     transport: NativeUrlTransport,
+    delivery: SharedDelivery,
     closed: AtomicBool,
 }
 
@@ -489,8 +860,7 @@ impl Channel for NativeUrlChannel {
         })?;
         let state = base64_url_no_pad(&random_bytes());
         let payload = self
-            .transport
-            .broker
+            .delivery
             .deliver(RelayRequest {
                 signer_url: self.transport.options.signer_url.clone(),
                 page_url: self.transport.options.page_url()?,
@@ -501,8 +871,6 @@ impl Channel for NativeUrlChannel {
             })
             .await?;
 
-        // The page binds the answer to the request it was given; a mismatch is a
-        // stray or forged delivery, not something to reason about.
         if payload.state.as_deref() != Some(state.as_str()) {
             return Err(SignerError::Protocol(format!(
                 "the relay page returned state {:?}, expected {:?}",
@@ -511,7 +879,7 @@ impl Channel for NativeUrlChannel {
         }
         if payload.message.trim_start().starts_with('[') {
             return Err(SignerError::Protocol(
-                "the signer answered with a JSON-RPC batch; this transport sends one request per navigation"
+                "the signer answered with a JSON-RPC batch; this transport sends one request at a time"
                     .to_string(),
             ));
         }
@@ -535,29 +903,28 @@ impl Channel for NativeUrlChannel {
 
     async fn close(&self) -> Result<(), SignerError> {
         self.closed.store(true, Ordering::SeqCst);
+        self.delivery.close();
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::transport::{JsonRpcId, JsonRpcRequest};
-    use std::sync::Mutex;
-
     use serde_json::{Value, json};
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicUsize;
 
-    /// What a fake broker answers with.
+    // -- a broker that answers without a browser ---------------------------
+
     type Answer = Box<dyn Fn(&RelayRequest) -> Result<CallbackPayload, SignerError> + Send + Sync>;
 
-    /// A broker that records what it was asked to deliver and answers with a
-    /// canned payload, standing in for the browser and the signer.
-    struct FakeBroker {
-        calls: Mutex<Vec<RelayRequest>>,
+    struct FakeDelivery {
+        calls: StdMutex<Vec<RelayRequest>>,
         answer: Answer,
     }
 
-    impl FakeBroker {
+    impl FakeDelivery {
         fn new(
             answer: impl Fn(&RelayRequest) -> Result<CallbackPayload, SignerError>
             + Send
@@ -565,7 +932,7 @@ mod tests {
             + 'static,
         ) -> Arc<Self> {
             Arc::new(Self {
-                calls: Mutex::new(Vec::new()),
+                calls: StdMutex::new(Vec::new()),
                 answer: Box::new(answer),
             })
         }
@@ -576,10 +943,40 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl CallbackBroker for FakeBroker {
+    impl CallbackDelivery for FakeDelivery {
         async fn deliver(&self, request: RelayRequest) -> Result<CallbackPayload, SignerError> {
             self.calls.lock().unwrap().push(request.clone());
             (self.answer)(&request)
+        }
+
+        fn close(&self) {}
+    }
+
+    struct FakeBroker {
+        delivery: Arc<FakeDelivery>,
+        opened: AtomicUsize,
+    }
+
+    impl FakeBroker {
+        fn new(delivery: Arc<FakeDelivery>) -> Arc<Self> {
+            Arc::new(Self {
+                delivery,
+                opened: AtomicUsize::new(0),
+            })
+        }
+
+        fn opened(&self) -> usize {
+            self.opened.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CallbackBroker for FakeBroker {
+        fn open(
+            &self,
+            _options: &NativeUrlTransportOptions,
+        ) -> Result<SharedDelivery, SignerError> {
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            Ok(self.delivery.clone())
         }
     }
 
@@ -602,37 +999,34 @@ mod tests {
         )
     }
 
-    fn channel(broker: Arc<FakeBroker>) -> SharedChannel {
+    fn channel_with(broker: Arc<dyn CallbackBroker>) -> SharedChannel {
         let transport = NativeUrlTransport::with_broker(options(), broker).expect("transport");
         futures::executor::block_on(transport.establish_channel()).expect("channel")
     }
 
     #[test]
-    fn one_send_is_one_navigation() {
-        let broker = FakeBroker::new(|request| {
+    fn one_session_serves_every_send() {
+        let delivery = FakeDelivery::new(|request| {
             answer_with(
                 request,
                 json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true } }),
             )
         });
-        let channel = channel(broker.clone());
+        let broker = FakeBroker::new(delivery.clone());
+        let channel = channel_with(broker.clone());
 
         let first = futures::executor::block_on(channel.send(request())).expect("answer");
         assert!(matches!(first, JsonRpcResponse::Success { .. }));
-        assert_eq!(broker.calls().len(), 1);
-
         let second = futures::executor::block_on(channel.send(request())).expect("answer");
         assert!(matches!(second, JsonRpcResponse::Success { .. }));
-        assert_eq!(
-            broker.calls().len(),
-            2,
-            "a second send is a second navigation"
-        );
 
-        // Each navigation carries a fresh single-use state, and the page is told
-        // which callback to declare.
-        let calls = broker.calls();
-        assert_ne!(calls[0].state, calls[1].state);
+        assert_eq!(broker.opened(), 1, "a channel opens one delivery session");
+        let calls = delivery.calls();
+        assert_eq!(calls.len(), 2);
+        assert_ne!(
+            calls[0].state, calls[1].state,
+            "each step carries a fresh state"
+        );
         assert_eq!(
             calls[0].callback_url.as_str(),
             "https://app.example/auth/callback"
@@ -643,49 +1037,49 @@ mod tests {
 
     #[test]
     fn a_mismatched_state_is_refused() {
-        let broker = FakeBroker::new(|_request| {
+        let delivery = FakeDelivery::new(|_request| {
             Ok(CallbackPayload {
                 message: json!({ "jsonrpc": "2.0", "id": 1, "result": {} }).to_string(),
                 state: Some("not-the-state".to_string()),
             })
         });
-        let channel = channel(broker);
+        let channel = channel_with(FakeBroker::new(delivery));
         let error = futures::executor::block_on(channel.send(request())).expect_err("refused");
         assert!(matches!(error, SignerError::Protocol(_)), "{error}");
     }
 
     #[test]
     fn an_answer_for_another_request_is_refused() {
-        let broker = FakeBroker::new(|request| {
+        let delivery = FakeDelivery::new(|request| {
             answer_with(request, json!({ "jsonrpc": "2.0", "id": 7, "result": {} }))
         });
-        let channel = channel(broker);
+        let channel = channel_with(FakeBroker::new(delivery));
         let error = futures::executor::block_on(channel.send(request())).expect_err("refused");
         assert!(matches!(error, SignerError::Protocol(_)), "{error}");
     }
 
     #[test]
     fn a_batch_answer_is_refused() {
-        let broker = FakeBroker::new(|_request| {
+        let delivery = FakeDelivery::new(|request| {
             Ok(CallbackPayload {
                 message: json!([{ "jsonrpc": "2.0", "id": 1, "result": {} }]).to_string(),
-                state: Some(_request.state.clone()),
+                state: Some(request.state.clone()),
             })
         });
-        let channel = channel(broker);
+        let channel = channel_with(FakeBroker::new(delivery));
         let error = futures::executor::block_on(channel.send(request())).expect_err("refused");
         assert!(matches!(error, SignerError::Protocol(_)), "{error}");
     }
 
     #[test]
     fn a_refused_request_is_returned_as_the_signer_said() {
-        let broker = FakeBroker::new(|request| {
+        let delivery = FakeDelivery::new(|request| {
             answer_with(
                 request,
                 json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": 3001, "message": "Action aborted" } }),
             )
         });
-        let channel = channel(broker);
+        let channel = channel_with(FakeBroker::new(delivery));
         let response = futures::executor::block_on(channel.send(request())).expect("answer");
         let error = response.into_result().expect_err("refused");
         assert!(
@@ -696,175 +1090,322 @@ mod tests {
 
     #[test]
     fn a_closed_channel_sends_nothing() {
-        let broker = FakeBroker::new(|request| {
+        let delivery = FakeDelivery::new(|request| {
             answer_with(request, json!({ "jsonrpc": "2.0", "id": 1, "result": {} }))
         });
-        let channel = channel(broker.clone());
+        let fake = delivery.clone();
+        let channel = channel_with(FakeBroker::new(delivery));
         futures::executor::block_on(channel.close()).expect("close");
         let error = futures::executor::block_on(channel.send(request())).expect_err("closed");
         assert!(matches!(error, SignerError::ChannelClosed), "{error}");
-        assert!(broker.calls().is_empty());
+        assert!(fake.calls().is_empty());
     }
 
     #[test]
     fn insecure_or_fragmented_urls_are_refused() {
+        let broker = || FakeBroker::new(FakeDelivery::new(|_request| unreachable!()));
         let mut insecure = options();
         insecure.signer_url = "http://id.ai/authorize".to_string();
-        assert!(
-            NativeUrlTransport::with_broker(insecure, FakeBroker::new(|_| unreachable!())).is_err()
-        );
+        assert!(NativeUrlTransport::with_broker(insecure, broker()).is_err());
 
         let mut fragmented = options();
         fragmented.signer_url = "https://id.ai/authorize#fragment".to_string();
-        assert!(
-            NativeUrlTransport::with_broker(fragmented, FakeBroker::new(|_| unreachable!()))
-                .is_err()
-        );
+        assert!(NativeUrlTransport::with_broker(fragmented, broker()).is_err());
 
         let mut pathy = options();
         pathy.relay_origin = "https://app.example/auth".to_string();
-        assert!(
-            NativeUrlTransport::with_broker(pathy, FakeBroker::new(|_| unreachable!())).is_err()
-        );
+        assert!(NativeUrlTransport::with_broker(pathy, broker()).is_err());
 
         let mut traversal = options();
         traversal.relay_page = "/auth/../evil".to_string();
-        assert!(
-            NativeUrlTransport::with_broker(traversal, FakeBroker::new(|_| unreachable!()))
-                .is_err()
-        );
+        assert!(NativeUrlTransport::with_broker(traversal, broker()).is_err());
 
-        // Loopback hosts are the development exception.
         let mut local = options();
         local.relay_origin = "http://127.0.0.1:8787".to_string();
-        assert!(
-            NativeUrlTransport::with_broker(local, FakeBroker::new(|_| unreachable!())).is_ok()
-        );
+        assert!(NativeUrlTransport::with_broker(local, broker()).is_ok());
     }
 
-    // -- the loopback half --------------------------------------------------
+    // -- the loopback sessions, with a scripted page -----------------------
 
-    /// Opens the page by acting as the relay page and the signer at once: it
-    /// answers the URL's request and posts the answer back to the listener.
-    struct PostingBrowser {
-        post: Arc<dyn Fn(&str) -> String + Send + Sync>,
+    /// A page that behaves like `relay/auth/callback.html`: answers the
+    /// navigation it was opened with, then long-polls for the next one.
+    struct ScriptedBrowser {
+        opens: AtomicUsize,
+        posts: Arc<StdMutex<Vec<String>>>,
     }
 
-    impl BrowserOpener for PostingBrowser {
+    impl ScriptedBrowser {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                opens: AtomicUsize::new(0),
+                posts: Arc::new(StdMutex::new(Vec::new())),
+            })
+        }
+
+        fn opens(&self) -> usize {
+            self.opens.load(Ordering::SeqCst)
+        }
+
+        fn posts(&self) -> Vec<String> {
+            self.posts.lock().unwrap().clone()
+        }
+    }
+
+    impl BrowserOpener for ScriptedBrowser {
         fn open(&self, url: &str) -> Result<(), String> {
-            let post = self.post.clone();
+            self.opens.fetch_add(1, Ordering::SeqCst);
             let url = url.to_string();
+            let posts = self.posts.clone();
             std::thread::spawn(move || {
-                let (port, token, state, message) = match parse_relay_url(&url) {
-                    Ok(parts) => parts,
-                    Err(error) => {
-                        eprintln!("PostingBrowser: {error}");
+                let Ok(mut navigation) = Navigation::parse(&url) else {
+                    return;
+                };
+                loop {
+                    let Ok(request) = serde_json::from_str::<JsonRpcRequest>(&navigation.message)
+                    else {
+                        return;
+                    };
+                    let id = serde_json::to_value(&request.id).expect("id");
+                    let body = json!({ "jsonrpc": "2.0", "id": id, "result": { "ok": true } });
+                    let payload = json!({ "state": navigation.state, "message": body.to_string() });
+                    posts.lock().unwrap().push(navigation.state.clone());
+                    if navigation.post(&payload.to_string()).is_err() {
                         return;
                     }
-                };
-                let request: JsonRpcRequest =
-                    serde_json::from_str(&message).expect("the transport sends JSON-RPC");
-                let id = serde_json::to_value(request.id).expect("id");
-                let body = post(&id.to_string());
-                let response = json!({ "state": state, "message": body });
-                if let Err(error) = post_to_listener(port, &token, &response.to_string()) {
-                    eprintln!("PostingBrowser: {error}");
+                    match navigation.poll() {
+                        Ok(Some(next)) => navigation = next,
+                        _ => return,
+                    }
                 }
             });
             Ok(())
         }
     }
 
-    fn parse_relay_url(url: &str) -> Result<(u16, String, String, String), String> {
-        let url = url::Url::parse(url).map_err(|error| error.to_string())?;
-        let fragment = url.fragment().ok_or("no fragment")?;
-        let mut fields = std::collections::HashMap::new();
-        for (name, value) in url::form_urlencoded::parse(fragment.as_bytes()).into_owned() {
-            fields.insert(name, value);
+    #[derive(Clone)]
+    struct Navigation {
+        port: u16,
+        token: String,
+        message: String,
+        state: String,
+    }
+
+    impl Navigation {
+        fn parse(url: &str) -> Result<Self, String> {
+            let url = url::Url::parse(url).map_err(|error| error.to_string())?;
+            let fragment = url.fragment().ok_or("no fragment")?;
+            let mut fields = std::collections::HashMap::new();
+            for (name, value) in url::form_urlencoded::parse(fragment.as_bytes()).into_owned() {
+                fields.insert(name, value);
+            }
+            Ok(Self {
+                port: fields
+                    .get("port")
+                    .ok_or("no port")?
+                    .parse()
+                    .map_err(|_| "bad port")?,
+                token: fields.get("token").ok_or("no token")?.clone(),
+                message: fields.get("message").ok_or("no message")?.clone(),
+                state: fields.get("state").ok_or("no state")?.clone(),
+            })
         }
-        Ok((
-            fields
-                .get("port")
-                .ok_or("no port")?
-                .parse()
-                .map_err(|_| "bad port")?,
-            fields.get("token").ok_or("no token")?.clone(),
-            fields.get("state").ok_or("no state")?.clone(),
-            fields.get("message").ok_or("no message")?.clone(),
-        ))
-    }
 
-    fn post_to_listener(port: u16, token: &str, body: &str) -> Result<(), String> {
-        use std::io::{Read as _, Write as _};
-        let mut stream =
-            std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-        let request = format!(
-            "POST {RELAY_POST_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .map_err(|e| e.to_string())?;
-        if !response.starts_with("HTTP/1.1 204") {
-            return Err(format!("unexpected listener answer: {response}"));
+        fn post(&self, body: &str) -> Result<(), String> {
+            self.exchange("POST", RELAY_POST_PATH, Some(body))
         }
-        Ok(())
+
+        fn poll(&self) -> Result<Option<Self>, String> {
+            let (status, body) = self.exchange_with_response("GET", RELAY_POLL_PATH, None)?;
+            if status != 200 {
+                return Err(format!("poll answered {status}"));
+            }
+            let parsed: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+            if parsed.get("done").is_some() {
+                return Ok(None);
+            }
+            let next = parsed
+                .get("next")
+                .ok_or("poll answered neither next nor done")?;
+            let message = next
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or("no message")?;
+            let state = next
+                .get("state")
+                .and_then(Value::as_str)
+                .ok_or("no state")?;
+            Ok(Some(Self {
+                port: self.port,
+                token: self.token.clone(),
+                message: message.to_string(),
+                state: state.to_string(),
+            }))
+        }
+
+        fn exchange(&self, method: &str, path: &str, body: Option<&str>) -> Result<(), String> {
+            let (status, _) = self.exchange_with_response(method, path, body)?;
+            if status == 204 {
+                Ok(())
+            } else {
+                Err(format!("{method} {path} answered {status}"))
+            }
+        }
+
+        fn exchange_with_response(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&str>,
+        ) -> Result<(u16, String), String> {
+            use std::io::{Read as _, Write as _};
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port))
+                .map_err(|e| e.to_string())?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .map_err(|e| e.to_string())?;
+            let body = body.unwrap_or("");
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                self.token,
+                body.len()
+            );
+            stream
+                .write_all(request.as_bytes())
+                .map_err(|e| e.to_string())?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .map_err(|e| e.to_string())?;
+            let status = response
+                .split_whitespace()
+                .nth(1)
+                .and_then(|status| status.parse().ok())
+                .ok_or("unreadable status line")?;
+            let body = response
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_string())
+                .unwrap_or_default();
+            Ok((status, body))
+        }
     }
 
-    #[test]
-    fn the_loopback_relay_carries_the_answer() {
-        let broker = LoopbackBroker::with_opener(Arc::new(PostingBrowser {
-            post: Arc::new(|id| {
-                json!({ "jsonrpc": "2.0", "id": serde_json::from_str::<Value>(id).expect("id"), "result": { "ok": true } })
-                    .to_string()
-            }),
-        }));
-        let transport =
-            NativeUrlTransport::with_broker(options(), Arc::new(broker)).expect("transport");
-        let channel = futures::executor::block_on(transport.establish_channel()).expect("channel");
-        let response = futures::executor::block_on(channel.send(request())).expect("answer");
-        assert!(matches!(response, JsonRpcResponse::Success { .. }));
-    }
-
-    #[test]
-    fn the_loopback_relay_requires_the_token() {
-        // The listener ignores the wrong token and keeps waiting for the page
-        // that was actually opened, so the test shortens the deadline.
+    fn loopback_transport(
+        browser: Arc<ScriptedBrowser>,
+        idle: Duration,
+        timeout: Duration,
+    ) -> SharedChannel {
         let mut options = options();
-        options.timeout = Duration::from_millis(300);
-        let transport = NativeUrlTransport::with_broker(
-            options,
-            Arc::new(LoopbackBroker::with_opener(Arc::new(UnauthorizedBrowser))),
-        )
-        .expect("transport");
+        options.timeout = timeout;
+        let broker = LoopbackBroker::with_idle(browser, idle);
+        let transport =
+            NativeUrlTransport::with_broker(options, Arc::new(broker)).expect("transport");
+        futures::executor::block_on(transport.establish_channel()).expect("channel")
+    }
+
+    #[test]
+    fn a_second_step_rides_the_same_tab() {
+        let browser = ScriptedBrowser::new();
+        let channel = loopback_transport(
+            browser.clone(),
+            Duration::from_millis(300),
+            Duration::from_secs(5),
+        );
+
+        let first = futures::executor::block_on(channel.send(request())).expect("first step");
+        assert!(matches!(first, JsonRpcResponse::Success { .. }));
+        // The page reports the answer and starts polling for the next step.
+        std::thread::sleep(Duration::from_millis(150));
+
+        let second = futures::executor::block_on(channel.send(request())).expect("second step");
+        assert!(matches!(second, JsonRpcResponse::Success { .. }));
+
+        assert_eq!(browser.opens(), 1, "the second step used the open tab");
+        assert_eq!(browser.posts().len(), 2);
+        futures::executor::block_on(channel.close()).expect("close");
+    }
+
+    #[test]
+    fn a_step_after_the_page_finished_opens_a_new_tab() {
+        let browser = ScriptedBrowser::new();
+        let channel = loopback_transport(
+            browser.clone(),
+            Duration::from_millis(150),
+            Duration::from_secs(5),
+        );
+
+        futures::executor::block_on(channel.send(request())).expect("first step");
+        // Let the page's poll time out ("done") and the tab go away.
+        std::thread::sleep(Duration::from_millis(600));
+
+        futures::executor::block_on(channel.send(request())).expect("second step");
+        assert_eq!(browser.opens(), 2, "a finished page is replaced");
+        futures::executor::block_on(channel.close()).expect("close");
+    }
+
+    #[test]
+    fn closing_the_channel_releases_the_listener() {
+        let browser = ScriptedBrowser::new();
+        let channel = loopback_transport(
+            browser.clone(),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+        );
+        futures::executor::block_on(channel.send(request())).expect("step");
+        futures::executor::block_on(channel.close()).expect("close");
+        let error = futures::executor::block_on(channel.send(request())).expect_err("closed");
+        assert!(matches!(error, SignerError::ChannelClosed), "{error}");
+    }
+
+    /// Opens nothing at all: the page never answers.
+    struct QuietBrowser;
+
+    impl BrowserOpener for QuietBrowser {
+        fn open(&self, _url: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_page_that_never_answers_times_out() {
+        let mut options = options();
+        options.timeout = Duration::from_millis(250);
+        let broker = LoopbackBroker::with_opener(Arc::new(QuietBrowser));
+        let transport =
+            NativeUrlTransport::with_broker(options, Arc::new(broker)).expect("transport");
         let channel = futures::executor::block_on(transport.establish_channel()).expect("channel");
-        let error = futures::executor::block_on(channel.send(request())).expect_err("no answer");
+        let error = futures::executor::block_on(channel.send(request())).expect_err("timeout");
         assert!(matches!(error, SignerError::Timeout), "{error}");
     }
 
-    /// Posts with the wrong bearer token; the listener must ignore it and wait
-    /// for the real page (here: until the flow times out).
-    struct UnauthorizedBrowser;
-
-    impl BrowserOpener for UnauthorizedBrowser {
-        fn open(&self, url: &str) -> Result<(), String> {
-            let url = url.to_string();
-            std::thread::spawn(move || {
-                if let Ok((port, _token, _state, _message)) = parse_relay_url(&url) {
-                    let _ = post_with_token(port, "Bearer wrong-token");
-                }
-            });
-            Ok(())
+    #[test]
+    fn a_wrong_token_is_ignored() {
+        struct WrongTokenBrowser;
+        impl BrowserOpener for WrongTokenBrowser {
+            fn open(&self, url: &str) -> Result<(), String> {
+                let url = url.to_string();
+                std::thread::spawn(move || {
+                    let Ok(navigation) = Navigation::parse(&url) else {
+                        return;
+                    };
+                    let payload = json!({ "state": navigation.state, "message": "{}" }).to_string();
+                    let _ = post_with_token(navigation.port, "Bearer wrong-token", &payload);
+                });
+                Ok(())
+            }
         }
+
+        let mut options = options();
+        options.timeout = Duration::from_millis(300);
+        let broker = LoopbackBroker::with_opener(Arc::new(WrongTokenBrowser));
+        let transport =
+            NativeUrlTransport::with_broker(options, Arc::new(broker)).expect("transport");
+        let channel = futures::executor::block_on(transport.establish_channel()).expect("channel");
+        let error = futures::executor::block_on(channel.send(request())).expect_err("timeout");
+        assert!(matches!(error, SignerError::Timeout), "{error}");
     }
 
-    fn post_with_token(port: u16, authorization: &str) -> Result<(), String> {
+    fn post_with_token(port: u16, authorization: &str, body: &str) -> Result<(), String> {
         use std::io::Write as _;
-        let body = "{\"state\":\"x\",\"message\":\"{}\"}";
         let mut stream =
             std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
         let request = format!(
@@ -878,29 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn a_timeout_is_a_timeout() {
-        let mut options = options();
-        options.timeout = Duration::from_millis(250);
-
-        struct QuietBrowser;
-        impl BrowserOpener for QuietBrowser {
-            fn open(&self, _url: &str) -> Result<(), String> {
-                Ok(())
-            }
-        }
-
-        let transport = NativeUrlTransport::with_broker(
-            options,
-            Arc::new(LoopbackBroker::with_opener(Arc::new(QuietBrowser))),
-        )
-        .expect("transport");
-        let channel = futures::executor::block_on(transport.establish_channel()).expect("channel");
-        let error = futures::executor::block_on(channel.send(request())).expect_err("timeout");
-        assert!(matches!(error, SignerError::Timeout), "{error}");
-    }
-
-    #[test]
-    fn a_browser_that_cannot_open_closes_the_flow() {
+    fn a_browser_that_cannot_open_fails_the_send() {
         struct BrokenBrowser;
         impl BrowserOpener for BrokenBrowser {
             fn open(&self, _url: &str) -> Result<(), String> {
@@ -908,11 +1427,9 @@ mod tests {
             }
         }
 
-        let transport = NativeUrlTransport::with_broker(
-            options(),
-            Arc::new(LoopbackBroker::with_opener(Arc::new(BrokenBrowser))),
-        )
-        .expect("transport");
+        let broker = LoopbackBroker::with_opener(Arc::new(BrokenBrowser));
+        let transport =
+            NativeUrlTransport::with_broker(options(), Arc::new(broker)).expect("transport");
         let channel = futures::executor::block_on(transport.establish_channel()).expect("channel");
         let error = futures::executor::block_on(channel.send(request())).expect_err("no browser");
         assert!(matches!(error, SignerError::Transport(_)), "{error}");

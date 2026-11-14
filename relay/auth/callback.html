@@ -17,10 +17,15 @@
 <script>
 // The ICRC-167 callback: the signer navigated here with its answer in the
 // fragment. This page hands that answer to the native application's loopback
-// listener, using the port and token the relay page stored for this attempt.
+// listener, then long-polls for the next request of the same ceremony. A
+// ceremony that needs several requests (an attribute request after the session
+// delegation, notification consent) keeps this one tab and navigates it again.
 (() => {
   const status = document.getElementById("status");
+  const ATTEMPT = "icrc167.attempt";
+
   const fail = (message) => {
+    sessionStorage.removeItem(ATTEMPT);
     status.textContent = message;
   };
 
@@ -38,37 +43,75 @@
     return fail("The signer did not return the request state.");
   }
 
-  const key = "icrc167:" + state;
-  const pending = sessionStorage.getItem(key);
-  // Single use: the attempt is over either way.
-  sessionStorage.removeItem(key);
-  if (!pending) {
+  let attempt;
+  try {
+    attempt = JSON.parse(sessionStorage.getItem(ATTEMPT) || "null");
+  } catch {
+    attempt = null;
+  }
+  if (!attempt || !attempt.port || !attempt.token) {
     return fail("This sign-in did not start in this tab.");
   }
-
-  let port;
-  let token;
-  try {
-    ({ port, token } = JSON.parse(pending));
-  } catch {
-    return fail("This sign-in could not be read.");
+  if (attempt.expectedState !== state) {
+    return fail("The signer answered a request this tab is not waiting for.");
   }
 
-  fetch("http://127.0.0.1:" + encodeURIComponent(port) + "/icrc167", {
+  const base = "http://127.0.0.1:" + encodeURIComponent(attempt.port);
+  const authorization = "Bearer " + attempt.token;
+
+  const next = async () => {
+    // Long-poll: the application holds this request until either another step
+    // is ready or this ceremony is done, so the tab never sits on a dead page.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+    try {
+      const response = await fetch(base + "/icrc167/poll", {
+        cache: "no-store",
+        headers: { Authorization: authorization },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        return fail("The application stopped waiting for this sign-in.");
+      }
+      const body = await response.json();
+      if (body.next) {
+        attempt.expectedState = body.next.state;
+        sessionStorage.setItem(ATTEMPT, JSON.stringify(attempt));
+        const target = new URL(body.next.signer);
+        target.hash = new URLSearchParams({
+          message: body.next.message,
+          callback: body.next.callback,
+          state: body.next.state,
+        }).toString();
+        location.replace(target.toString());
+        return;
+      }
+      sessionStorage.removeItem(ATTEMPT);
+      status.textContent = "Done. Return to the application.";
+    } catch {
+      clearTimeout(timer);
+      fail("The application stopped waiting for this sign-in.");
+    }
+  };
+
+  fetch(base + "/icrc167", {
     method: "POST",
     cache: "no-store",
     headers: {
       "Content-Type": "application/json",
-      Authorization: "Bearer " + token,
+      Authorization: authorization,
     },
     body: JSON.stringify({ state, message }),
   })
     .then((response) => {
-      if (!response.ok && response.status !== 0) {
-        fail("The application refused the answer; return to it and try again.");
-        return;
+      if (response.status === 409) {
+        return fail("The application is no longer waiting for this sign-in.");
       }
-      status.textContent = "Done. Return to the application.";
+      if (!response.ok) {
+        return fail("The application refused the answer; return to it and try again.");
+      }
+      return next();
     })
     .catch(() => {
       fail("The application is not listening; return to it and try again.");

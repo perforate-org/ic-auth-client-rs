@@ -76,8 +76,13 @@
     return fail("The callback must be on this relay's origin.");
   }
 
-  // The loopback port and token never reach the signer: they are ours.
-  sessionStorage.setItem("icrc167:" + state, JSON.stringify({ port, token }));
+  // The loopback port and token never reach the signer: they are ours. One
+  // record follows the whole ceremony, because later steps navigate from the
+  // callback page rather than from here.
+  sessionStorage.setItem(
+    "icrc167.attempt",
+    JSON.stringify({ port, token, expectedState: state }),
+  );
 
   const target = new URL(signerUrl.toString());
   target.hash = new URLSearchParams({ message, callback, state }).toString();

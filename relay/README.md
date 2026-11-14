@@ -98,9 +98,12 @@ curl -s https://app.example/.well-known/ii-auth-callbacks
 
 ## Known limits
 
-- **One request per navigation.** The signer does not answer JSON-RPC batches
-  (measured against id.ai), so a multi-step ceremony (attributes, notification
-  consent) is several navigations, not one.
+- **One request per message, one tab per ceremony.** The signer does not answer
+  JSON-RPC batches (measured against id.ai), so a multi-step ceremony
+  (attributes, notification consent) is several navigations. They stay in one
+  tab: the callback page long-polls the application for the next request and
+  navigates again. A page deployed before this protocol, or a tab the user
+  closed, degrades to "one new tab per step".
 - **Chrome is the verified browser.** The callback page POSTs from a public
   HTTPS origin to `http://127.0.0.1`, which Chrome allows (the transport answers
   the Private Network Access preflight). Safari's mixed-content rules have not

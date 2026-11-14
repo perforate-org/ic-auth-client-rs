@@ -113,29 +113,34 @@ Building blocks:
 
 ### Relay page contract
 
-The page is stateless apart from `sessionStorage`:
+The pages are stateless apart from `sessionStorage`:
 
 1. `/auth/` reads `#signer`, `#message`, `#state`, `#callback`, `#port`,
    `#token`, strips the fragment, and refuses a request that is not one
-   `icrc34_delegation`-shaped JSON-RPC object, a signer that is not HTTPS (or
-   loopback), or a callback that is not on its own origin. It then stores
-   `{port, token}` in `sessionStorage` keyed by `state` and `location.replace`s
-   to `<signer>#message=<message>&callback=<callback>&state=<state>`.
-2. `/auth/callback` reads `#message` + `#state`, strips the fragment, looks the
-   attempt up by `state`, **removes it** (single use), POSTs
-   `{state, message}` to `http://127.0.0.1:<port>/icrc167` with
-   `Authorization: Bearer <token>`, and renders "Return to the application".
-3. A load of `/auth/callback` **without** `message` is not a response (II's
-   signer-initiated navigation): the page starts a fresh interaction or shows
-   the app.
-4. The listener answers the browser's Private Network Access preflight
+   JSON-RPC object, a signer that is not HTTPS (or loopback), or a callback that
+   is not on its own origin. It stores `{port, token, expectedState}` under one
+   `sessionStorage` key and `location.replace`s to
+   `<signer>#message=<message>&callback=<callback>&state=<state>`.
+2. `/auth/callback` reads `#message` + `#state`, strips the fragment, checks
+   `state` against the attempt's `expectedState`, POSTs `{state, message}` to
+   `http://127.0.0.1:<port>/icrc167` with `Authorization: Bearer <token>`, and
+   then **long-polls** `GET /icrc167/poll` with the same token.
+3. The poll answers `{"next":{"signer","message","state","callback"}}` when the
+   application has another request for this ceremony (an attribute request, a
+   notification consent), and `{"done":true}` when none arrives within the
+   application's idle window. On `next` the page updates `expectedState` and
+   navigates the **same tab** again; on `done` it removes the attempt and shows
+   "return to the application".
+4. A load of `/auth/callback` **without** `message` is not a response (II's
+   signer-initiated navigation): the page shows the app instead.
+5. The listener answers the browser's Private Network Access preflight
    (`Access-Control-Allow-Private-Network: true`), because the relay page is a
    public origin calling a loopback port.
 
-Stage 4 extends the same channel for multi-step flows: the loopback response to
-the POST carries the next `{signer, message, state}`, and the page navigates
-again in the same tab. That keeps one browser tab for a whole ceremony
-(attributes, notification consent) without reopening the browser.
+A page deployed before the polling protocol still works: it answers one request
+and stays on "done", the application's idle window expires and the next request
+opens a fresh tab, which is the pre-phase-5 behaviour. That also covers a tab
+the user closed mid-ceremony, at the cost of re-opening and a fresh consent.
 
 ## 4. Public API
 
@@ -320,11 +325,13 @@ have no verified hand-off.
 | 5 | Multi-step loopback protocol (attributes, notification consent) | two round-trips through one browser tab |
 | 6 | Mobile `CallbackBroker` (Swift/Kotlin over UniFFI) | device flow with `ASWebAuthenticationSession` / Custom Tabs |
 
-Phases 1--3 are implemented: the transport and its unit tests, the
-`native_relay` option and its validation, and the deployable pages in
-[`relay/`](../../relay/README.md) with a headless-browser self-test
-(`relay/selftest.py`, 5 checks) plus [`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md).
-Phase 4 (rotation) is implemented as described in §5.
+Phases 1--5 are implemented: the transport, the `native_relay` option, the
+deployable pages in [`relay/`](../../relay/README.md) with a headless-browser
+self-test (`relay/selftest.py`, 6 checks) and
+[`examples/rust/native-icrc167`](../../examples/rust/native-icrc167/README.md),
+native rotation through a platform executor (§5), and the long-poll continuation
+that keeps one browser tab for a multi-step ceremony (§3). Phase 6 (mobile
+delivery) is next.
 
 ## 10. Decisions and remaining questions
 

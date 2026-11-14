@@ -71,17 +71,6 @@ FAKE_SIGNER = """<!doctype html>
 </script></body></html>"""
 
 
-class Captured:
-    """What a loopback listener received (one attempt)."""
-
-    def __init__(self) -> None:
-        self.payload: dict | None = None
-        self.path: str | None = None
-        self.authorization: str | None = None
-        self.cors: str | None = None
-        self.event = threading.Event()
-
-
 class RelayHandler(BaseHTTPRequestHandler):
     """Serves the relay pages, the allow-list and the fake signer."""
 
@@ -118,11 +107,27 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.respond(HTTPStatus.NOT_FOUND, b"not found", "text/plain; charset=utf-8")
 
 
+class Captured:
+    """What a loopback listener received."""
+
+    def __init__(self) -> None:
+        self.payloads: list[dict] = []
+        self.authorization: str | None = None
+        self.cors: str | None = None
+        self.event = threading.Event()
+
+
 class LoopbackHandler(BaseHTTPRequestHandler):
-    """Stands in for the native listener that receives the relay's POST."""
+    """Stands in for the native listener that receives the relay's report.
+
+    Implements the two endpoints the pages use: `POST /icrc167` for one step's
+    answer and `GET /icrc167/poll` for the next step of the ceremony. `script`
+    holds the scripted next navigations; an empty script means "done".
+    """
 
     captured = Captured()
     token = ""
+    script: list[dict] = []
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: N802 - http.server API
         pass
@@ -144,19 +149,40 @@ class LoopbackHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.UNAUTHORIZED
             capture.authorization = authorization
         else:
-            capture.path = self.path
             capture.authorization = authorization
             capture.cors = self.headers.get("Origin")
-            capture.payload = json.loads(body)
+            capture.payloads.append(json.loads(body))
             capture.event.set()
         self.send_response(status)
         self.add_headers()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        capture = type(self).captured
+        authorization = self.headers.get("Authorization")
+        if self.path != "/icrc167/poll":
+            status, document = HTTPStatus.NOT_FOUND, {"error": "not found"}
+        elif authorization != "Bearer " + type(self).token:
+            status, document = HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}
+        else:
+            capture.authorization = authorization
+            script = type(self).script
+            if script:
+                status, document = HTTPStatus.OK, {"next": script.pop(0)}
+            else:
+                status, document = HTTPStatus.OK, {"done": True}
+        body = json.dumps(document).encode()
+        self.send_response(status)
+        self.add_headers()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def add_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "authorization, content-type")
         self.send_header("Access-Control-Allow-Private-Network", "true")
 
@@ -298,15 +324,53 @@ def main() -> int:
         )
         if not captured.event.wait(timeout=30):
             return fail("the relay never delivered the answer", driver)
-        payload = captured.payload or {}
+        payload = captured.payloads[0] if captured.payloads else {}
         assert payload.get("state") == "state-happy", payload
         answered = json.loads(payload.get("message", "null"))
         assert answered["id"] == "happy-1", answered
         assert len(answered["result"]["signerDelegation"]) == 1, answered
-        time.sleep(0.3)
-        assert "Done" in (driver.text() or ""), driver.text()
+        assert "Done" in wait_for_text(driver, "Done"), driver.text()
         assert driver.url().startswith(relay_origin + "/auth/callback"), driver.url()
         print("PASS  happy path: fragment -> signer -> callback -> loopback, state and id checked")
+
+        # -- a second step rides the same tab ------------------------------
+        captured = Captured()
+        LoopbackHandler.captured = captured
+        LoopbackHandler.script = [
+            {
+                "signer": relay_origin + "/fake-signer",
+                "message": message("happy-2"),
+                "state": "state-happy-2",
+                "callback": relay_origin + "/auth/callback",
+            }
+        ]
+        driver.get(
+            relay_origin
+            + "/auth/?case=continue#"
+            + fragment(
+                signer=relay_origin + "/fake-signer",
+                message=message("happy-1"),
+                callback=relay_origin + "/auth/callback",
+                port=loopback_port,
+                token=LoopbackHandler.token,
+                state="state-happy",
+            )
+        )
+        if not captured.event.wait(timeout=30):
+            return fail("the relay never delivered the answer", driver)
+        # The page reports the first answer, polls, navigates again in the same
+        # tab and reports the second one.
+        deadline = time.monotonic() + 20
+        while len(captured.payloads) < 2 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert len(captured.payloads) == 2, captured.payloads
+        assert captured.payloads[0]["state"] == "state-happy", captured.payloads
+        assert captured.payloads[1]["state"] == "state-happy-2", captured.payloads
+        assert "Done" in wait_for_text(driver, "Done"), driver.text()
+        captured_url = driver.url()
+        assert captured_url.startswith(relay_origin + "/auth/callback"), captured_url
+        print("PASS  a second step navigated the same tab (long-poll continuation)")
+        LoopbackHandler.script = []
 
         # -- the callback must be on the relay's origin --------------------
         driver.get(

@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LocalSet`, so a mint's canister calls have a reactor), `ClientIdentity::refresh()`
   for host lifecycle events, and on-demand `prepare()` in `get_identity()`.
 
+- Native sign-in keeps **one browser tab** for a ceremony that needs several
+  signer requests (an attribute request after the session delegation,
+  notification consent): the relay page's callback long-polls the application
+  for the next request and navigates the same tab. The transport also no longer
+  binds a loopback listener per step; one session serves the whole channel. A
+  page deployed before the polling protocol, or a tab the user closed mid
+  ceremony, degrades to one new tab per step.
+
 ### Fixed
 
 - Signing a request now counts as use for the rotating session. The scheduled
