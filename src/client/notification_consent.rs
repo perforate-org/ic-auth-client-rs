@@ -21,6 +21,7 @@ use ic_agent::Agent;
 use ic_agent::export::Principal;
 use ic_agent::identity::DelegatedIdentity;
 
+use crate::client::agent::{AgentOptions, AgentTrust};
 use crate::client::error::AuthClientError;
 use crate::client::options::NotificationConsentStatus;
 use crate::client::platform::PlatformBounds;
@@ -174,6 +175,7 @@ pub type SharedNotificationConsentService = Arc<dyn NotificationConsentService>;
 struct CanisterNotificationConsentService {
     agent: Agent,
     canister_id: Principal,
+    trust: AgentTrust,
 }
 
 #[async_trait(?Send)]
@@ -181,6 +183,10 @@ impl NotificationConsentService for CanisterNotificationConsentService {
     async fn app_notification_consent_status(
         &self,
     ) -> Result<ConsentStatusResult, AuthClientError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(AuthClientError::Agent)?;
         let reply = self
             .agent
             .query(&self.canister_id, II_NOTIFICATION_CONSENT_STATUS_METHOD)
@@ -197,6 +203,10 @@ impl NotificationConsentService for CanisterNotificationConsentService {
     async fn app_revoke_notification_consent(
         &self,
     ) -> Result<ConsentRevokeResult, AuthClientError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(AuthClientError::Agent)?;
         let reply = self
             .agent
             .update(&self.canister_id, II_NOTIFICATION_CONSENT_REVOKE_METHOD)
@@ -327,6 +337,12 @@ pub struct NotificationConsentOptions {
 
     /// The IC host the agent talks to.
     pub host: String,
+
+    /// The host's known root key, for a replica that is not the mainnet.
+    pub root_key: Option<Vec<u8>>,
+
+    /// Read the root key from the host's `api/v2/status` on first use.
+    pub fetch_root_key: bool,
 }
 
 impl std::fmt::Debug for NotificationConsentOptions {
@@ -388,10 +404,16 @@ impl NotificationConsent {
             .with_boxed_identity(Box::new(identity))
             .build()
             .map_err(|error| AuthClientError::Agent(error.to_string()))?;
+        let trust = AgentTrust::new(AgentOptions {
+            root_key: options.root_key,
+            fetch_root_key: options.fetch_root_key,
+        });
+        trust.apply(&agent);
         Ok(Self {
             service: Arc::new(CanisterNotificationConsentService {
                 agent,
                 canister_id: options.canister_id,
+                trust,
             }),
         })
     }
@@ -904,6 +926,8 @@ mod tests {
                 session_chain: chain([Some(vec![test_canister()])]),
                 canister_id: test_canister(),
                 host: "not a url".to_string(),
+                root_key: None,
+                fetch_root_key: false,
             };
             let error = NotificationConsent::create(options).await.unwrap_err();
             assert_eq!(error.kind(), AuthClientErrorKind::Agent);
@@ -927,6 +951,8 @@ mod tests {
                 session_chain: chain([None]),
                 canister_id: test_canister(),
                 host: "https://icp-api.io".to_string(),
+                root_key: None,
+                fetch_root_key: false,
             };
             let error = NotificationConsent::create(options).await.unwrap_err();
             assert!(error.to_string().contains("names any canister"));

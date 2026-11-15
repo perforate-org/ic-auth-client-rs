@@ -44,6 +44,7 @@ use ic_agent::identity::{
     DelegatedIdentity, Delegation, DelegationPermissions, Identity, SignedDelegation,
 };
 
+use crate::client::agent::{AgentOptions, AgentTrust};
 use crate::client::platform::PlatformBounds;
 use crate::client::session::app_delegation_source::{
     AppDelegationSource, NoSuchDelegationError, SessionError, SessionGoneError,
@@ -253,6 +254,7 @@ pub fn assert_chain_reaches(
 struct AgentSessionService {
     agent: ic_agent::Agent,
     canister_id: Principal,
+    trust: AgentTrust,
 }
 
 impl AgentSessionService {
@@ -261,6 +263,10 @@ impl AgentSessionService {
         method: &str,
         arg: Vec<u8>,
     ) -> Result<AppResult<T>, SessionError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(SessionError::Retryable)?;
         let reply = self
             .agent
             .update(&self.canister_id, method)
@@ -277,6 +283,10 @@ impl AgentSessionService {
         method: &str,
         arg: Vec<u8>,
     ) -> Result<AppResult<T>, SessionError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(SessionError::Retryable)?;
         let reply = self
             .agent
             .query(&self.canister_id, method)
@@ -320,6 +330,20 @@ impl SessionService for AgentSessionService {
     }
 }
 
+/// Options for [`SessionMinter::create_with_options`].
+#[derive(Clone, Debug, Default)]
+pub struct SessionMinterOptions {
+    /// The IC endpoint the mint calls go to. `None` uses `https://icp-api.io`.
+    pub host: Option<String>,
+    /// The host's known root key, for a replica that is not the mainnet.
+    pub root_key: Option<Vec<u8>>,
+    /// Read the root key from the host's `api/v2/status` on first use.
+    ///
+    /// Only for a local replica. When `root_key` is set, that key is used and
+    /// nothing is fetched.
+    pub fetch_root_key: bool,
+}
+
 /// Mints app delegations by asking the Internet Identity canister for one.
 pub struct SessionMinter {
     service: Arc<dyn SessionService>,
@@ -339,12 +363,38 @@ impl SessionMinter {
     ///
     /// The agent signs as the session, which is what a mint call rests on: the
     /// chain is restricted to the identity canister, so it can call nothing
-    /// else. `host` is the IC endpoint the agent talks to.
+    /// else. `host` is the IC endpoint the agent talks to; the host's root key
+    /// is the mainnet's, so a local replica needs
+    /// [`SessionMinter::create_with_options`] with `root_key` or
+    /// `fetch_root_key`.
     pub fn create(
         session_key: Arc<dyn Identity>,
         session_chain: DelegationChain,
         canister_id: Principal,
         host: Option<String>,
+    ) -> Result<Self, SessionError> {
+        Self::create_with_options(
+            session_key,
+            session_chain,
+            canister_id,
+            SessionMinterOptions {
+                host,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Builds a minter over the session's own key and chain, with the agent's
+    /// trust settings for the IC host.
+    ///
+    /// A local replica signs with its own root key; hand it in through
+    /// [`SessionMinterOptions::root_key`], or ask the agent to read it from the
+    /// host's `api/v2/status` with `fetch_root_key`.
+    pub fn create_with_options(
+        session_key: Arc<dyn Identity>,
+        session_chain: DelegationChain,
+        canister_id: Principal,
+        options: SessionMinterOptions,
     ) -> Result<Self, SessionError> {
         assert_chain_reaches(&session_chain, canister_id)?;
 
@@ -359,19 +409,36 @@ impl SessionMinter {
             to,
             session_chain.delegations.clone(),
         );
-        let url = host.unwrap_or_else(|| "https://icp-api.io".to_string());
-        let agent = ic_agent::Agent::builder()
-            .with_url(url)
-            // Last, so no agent option can replace the session these calls are
-            // made as.
-            .with_identity(delegated)
-            .build()
-            .map_err(|error| SessionError::Retryable(format!("agent error: {error}")))?;
+        let agent = build_agent(delegated, options.host.as_deref())?;
+        let trust = AgentTrust::new(AgentOptions {
+            root_key: options.root_key,
+            fetch_root_key: options.fetch_root_key,
+        });
+        trust.apply(&agent);
 
         Ok(Self {
-            service: Arc::new(AgentSessionService { agent, canister_id }),
+            service: Arc::new(AgentSessionService {
+                agent,
+                canister_id,
+                trust,
+            }),
             canister_id,
         })
+    }
+
+    /// Builds a minter over an agent the host already configured.
+    ///
+    /// Nothing is fetched or overridden: whatever root key, proxy or timeouts
+    /// the agent carries is what the calls use.
+    pub fn with_agent(agent: ic_agent::Agent, canister_id: Principal) -> Self {
+        Self {
+            service: Arc::new(AgentSessionService {
+                agent,
+                canister_id,
+                trust: AgentTrust::new(AgentOptions::default()),
+            }),
+            canister_id,
+        }
     }
 
     /// Builds a minter over a service, for tests and for hosts that mint on the
@@ -432,6 +499,25 @@ impl SessionMinter {
         unwrap_session_result(self.service.revoke_session().await?)?;
         Ok(())
     }
+}
+
+/// Builds the agent the mint calls are made through.
+fn build_agent(
+    identity: DelegatedIdentity,
+    host: Option<&str>,
+) -> Result<ic_agent::Agent, SessionError> {
+    let url = host.unwrap_or("https://icp-api.io").to_string();
+    // `AgentBuilder::with_url` unwraps its own parse, so a host that is not a URL
+    // would panic; refuse it as an error instead.
+    url::Url::parse(&url)
+        .map_err(|error| SessionError::Retryable(format!("the IC host is not a URL: {error}")))?;
+    ic_agent::Agent::builder()
+        .with_url(url)
+        // Last, so no agent option can replace the session these calls are made
+        // as.
+        .with_identity(identity)
+        .build()
+        .map_err(|error| SessionError::Retryable(format!("agent error: {error}")))
 }
 
 #[async_trait(?Send)]
@@ -787,5 +873,90 @@ mod tests {
             Arc::new(ic_agent::identity::BasicIdentity::from_raw_key(&[1u8; 32]));
         let error = SessionMinter::create(key, chain(&[None]), ii(), None).unwrap_err();
         assert!(matches!(error, SessionError::InvalidChain(_)));
+    }
+
+    #[test]
+    fn a_configured_root_key_replaces_the_mainnet_one() {
+        let agent = ic_agent::Agent::builder()
+            .with_url("https://icp-api.io")
+            .build()
+            .expect("an agent");
+        let trust = AgentTrust::new(AgentOptions {
+            root_key: Some(vec![1, 2, 3]),
+            fetch_root_key: false,
+        });
+        trust.apply(&agent);
+        assert_eq!(agent.read_root_key(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_host_that_is_not_a_url_is_refused() {
+        let key: Arc<dyn Identity> =
+            Arc::new(ic_agent::identity::BasicIdentity::from_raw_key(&[1u8; 32]));
+        let error = SessionMinter::create(
+            key,
+            chain(&[Some(vec![ii()])]),
+            ii(),
+            Some("not a url".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not a URL"), "{error}");
+    }
+
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    #[test]
+    fn a_fetched_root_key_is_read_from_the_host_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let root_key = vec![9u8, 8, 7, 6, 5, 4];
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("a listener");
+        let port = server.server_addr().to_ip().expect("an ip").port();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let served = requests.clone();
+        let body_key = root_key.clone();
+        std::thread::spawn(move || {
+            while let Ok(request) = server.recv() {
+                served.fetch_add(1, AtomicOrdering::SeqCst);
+                let _ = request.respond(tiny_http::Response::from_data(status_cbor(&body_key)));
+            }
+        });
+
+        let agent = ic_agent::Agent::builder()
+            .with_url(format!("http://127.0.0.1:{port}"))
+            .build()
+            .expect("an agent");
+        let trust = AgentTrust::new(AgentOptions {
+            root_key: None,
+            fetch_root_key: true,
+        });
+        // A fetch is a `reqwest` call, so it needs the reactor the real
+        // callers run on (the app's runtime, or the rotation executor).
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime
+            .block_on(trust.ensure(&agent))
+            .expect("the root key was fetched");
+        assert_eq!(agent.read_root_key(), root_key);
+        runtime.block_on(trust.ensure(&agent)).expect("cached");
+        assert_eq!(requests.load(AtomicOrdering::SeqCst), 1, "fetched once");
+    }
+
+    #[cfg(all(
+        feature = "native",
+        any(target_os = "macos", target_os = "linux", target_os = "windows")
+    ))]
+    fn status_cbor(root_key: &[u8]) -> Vec<u8> {
+        // A one-entry CBOR map: {"root_key": bytes}.
+        assert!(root_key.len() < 24);
+        let mut body = vec![0xa1, 0x68];
+        body.extend_from_slice(b"root_key");
+        body.push(0x40 | root_key.len() as u8);
+        body.extend_from_slice(root_key);
+        body
     }
 }

@@ -31,6 +31,7 @@ use parking_lot::Mutex;
 use url::Url;
 
 use crate::client::Subscription;
+use crate::client::agent::{AgentOptions, AgentTrust};
 use crate::client::error::AuthClientError;
 use crate::client::options::{OpenIdProvider, SsoStatus};
 use crate::client::platform::{Listener, PlatformBounds};
@@ -433,6 +434,7 @@ pub type SsoServiceFactory = Arc<dyn ServiceFactory>;
 pub struct CanisterSsoDomainService {
     agent: Agent,
     canister_id: Principal,
+    trust: AgentTrust,
 }
 
 impl fmt::Debug for CanisterSsoDomainService {
@@ -452,6 +454,24 @@ impl CanisterSsoDomainService {
     /// [`AuthClientError::Agent`] when the agent cannot be built --- for
     /// example a host that is not a URL.
     pub fn new(canister_id: Principal, host: impl Into<String>) -> Result<Self, AuthClientError> {
+        Self::with_options(canister_id, host, AgentOptions::default())
+    }
+
+    /// Builds the service with the agent's trust settings for the IC host.
+    ///
+    /// A local replica signs with its own root key; hand it in through
+    /// [`AgentOptions::root_key`], or ask the agent to read it from the host's
+    /// `api/v2/status` with `AgentOptions::fetch_root_key`.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthClientError::Agent`] when the agent cannot be built --- for
+    /// example a host that is not a URL.
+    pub fn with_options(
+        canister_id: Principal,
+        host: impl Into<String>,
+        options: AgentOptions,
+    ) -> Result<Self, AuthClientError> {
         let host = host.into();
         // `AgentBuilder::with_url` unwraps its own parse, so a host that is not
         // a URL would panic; refuse it as an error instead.
@@ -463,13 +483,23 @@ impl CanisterSsoDomainService {
             .with_arc_identity(Arc::new(AnonymousIdentity))
             .build()
             .map_err(|error| AuthClientError::Agent(error.to_string()))?;
-        Ok(Self { agent, canister_id })
+        let trust = AgentTrust::new(options);
+        trust.apply(&agent);
+        Ok(Self {
+            agent,
+            canister_id,
+            trust,
+        })
     }
 }
 
 #[async_trait(?Send)]
 impl SsoDomainService for CanisterSsoDomainService {
     async fn check(&self, domain: &str) -> Result<(), AuthClientError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(AuthClientError::Agent)?;
         let argument = candid::encode_one(domain)
             .map_err(|error| AuthClientError::Agent(error.to_string()))?;
         self.agent
@@ -482,6 +512,10 @@ impl SsoDomainService for CanisterSsoDomainService {
     }
 
     async fn status(&self, domain: &str) -> Result<SsoDomainStatus, AuthClientError> {
+        self.trust
+            .ensure(&self.agent)
+            .await
+            .map_err(AuthClientError::Agent)?;
         let argument = candid::encode_one(domain)
             .map_err(|error| AuthClientError::Agent(error.to_string()))?;
         let reply = self
@@ -505,12 +539,14 @@ impl SsoDomainService for CanisterSsoDomainService {
 pub fn sso_domain_service_factory(
     canister_id: Principal,
     host: impl Into<String>,
+    options: AgentOptions,
 ) -> SsoServiceFactory {
     let host = host.into();
     let factory = move || -> SsoServiceFuture {
         let host = host.clone();
+        let options = options.clone();
         Box::pin(async move {
-            CanisterSsoDomainService::new(canister_id, host)
+            CanisterSsoDomainService::with_options(canister_id, host, options)
                 .map(|service| Arc::new(service) as SharedSsoDomainService)
         })
     };
