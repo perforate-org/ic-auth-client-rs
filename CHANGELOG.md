@@ -5,14 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.49.4] - 2026-11-15
 
 ### Added
 
 - **Root key configuration for canister calls.** `AuthClientCreateOptions` gains
   `root_key` and `fetch_root_key`, so a client can talk to a local replica
-  (`icp network start`, PocketIC), which signs with a root key of its own instead of the
-  mainnet one `ic-agent` starts from:
+  (`icp network start`, PocketIC). A replica signs with a root key of its own,
+  not the mainnet one `ic-agent` starts from:
   - `fetch_root_key: Some(true)` reads the key from the host's `api/v2/status`
     on first use (opt-in: against the mainnet it would trust the endpoint it is
     meant to verify);
