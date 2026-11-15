@@ -18,6 +18,7 @@
 //! equivalent rule is that everything is exported from this one module and
 //! nothing is exported at the crate root that is not part of the v11 surface.
 
+pub(crate) mod agent;
 pub(crate) mod async_once;
 pub mod base64;
 pub mod credentials;
@@ -43,6 +44,7 @@ pub mod webauth;
 mod auth_client;
 pub(crate) mod now;
 
+pub use agent::AgentOptions;
 pub use auth_client::AuthClient;
 #[cfg(feature = "native")]
 pub use credentials::native::NativeCredentialStorage;

@@ -162,6 +162,19 @@ pub struct AuthClientCreateOptions {
     /// crate accepts the host here and builds the agent itself.
     pub host: Option<String>,
 
+    /// The IC host's known root key, for a replica that is not the mainnet.
+    ///
+    /// `ic-agent` starts from the mainnet's key, so canister calls verified
+    /// against a local replica (`icp network start`, PocketIC) fail without this or
+    /// [`AuthClientCreateOptions::fetch_root_key`].
+    pub root_key: Option<Vec<u8>>,
+
+    /// Read the root key from the IC host's `api/v2/status` on first use.
+    ///
+    /// For a local replica. Opt in explicitly: against the mainnet this would
+    /// trust the endpoint the agent is meant to verify.
+    pub fetch_root_key: Option<bool>,
+
     /// Derivation origin for the identity provider.
     pub derivation_origin: Option<String>,
 

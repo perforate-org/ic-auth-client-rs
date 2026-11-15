@@ -19,6 +19,7 @@ use ic_agent::identity::{AnonymousIdentity, DelegatedIdentity, Identity as _};
 use parking_lot::Mutex;
 
 use crate::ArcIdentity;
+use crate::client::agent::AgentOptions;
 use crate::client::async_once::AsyncOnce;
 #[cfg(all(not(feature = "wasm-js"), feature = "native"))]
 use crate::client::credentials::MemoryCredentialStorage;
@@ -36,7 +37,7 @@ use crate::client::platform::{Listener, PlatformBounds};
 use crate::client::session::app_delegation_source::AppDelegationSource;
 use crate::client::session::app_delegation_source::SessionError;
 use crate::client::session::identity::{SessionIdentity, SessionIdentityCreateOptions};
-use crate::client::session::minter::SessionMinter;
+use crate::client::session::minter::{SessionMinter, SessionMinterOptions};
 use crate::client::session::{LockManager, steal_lock, steal_mint_lock};
 use crate::client::slots::{Slots, slots_for};
 use crate::client::sso::{SsoDomain, SsoStatusChecker, sso_domain_service_factory};
@@ -71,6 +72,9 @@ struct Settings {
     sso_domain: Option<String>,
     /// The IC host the agent uses for canister calls.
     host: String,
+    /// How that agent should trust the host (a local replica has its own root
+    /// key).
+    agent: AgentOptions,
     /// The relay page a native sign-in runs through, where configured.
     native_relay: Option<crate::client::options::NativeRelayOptions>,
 }
@@ -93,6 +97,10 @@ impl Settings {
                 .host
                 .clone()
                 .unwrap_or_else(|| "https://icp-api.io".to_string()),
+            agent: AgentOptions {
+                root_key: options.root_key.clone(),
+                fetch_root_key: options.fetch_root_key.unwrap_or(false),
+            },
             native_relay: options.native_relay.clone(),
         })
     }
@@ -437,11 +445,15 @@ impl AuthClient {
                     .await
             }
             None => {
-                let minter = SessionMinter::create(
+                let minter = SessionMinter::create_with_options(
                     session_key.as_arc_identity(),
                     session_chain.clone(),
                     canister_id,
-                    Some(self.settings.host.clone()),
+                    SessionMinterOptions {
+                        host: Some(self.settings.host.clone()),
+                        root_key: self.settings.agent.root_key.clone(),
+                        fetch_root_key: self.settings.agent.fetch_root_key,
+                    },
                 )
                 .map_err(AuthClientError::from)?;
                 Ok(Arc::new(minter))
@@ -1059,11 +1071,15 @@ impl AuthClient {
         // signed them out of their apps can find out that it had not.
         let revoke = async {
             let (identity, chain) = session?;
-            let minter = SessionMinter::create(
+            let minter = SessionMinter::create_with_options(
                 identity.as_arc_identity(),
                 chain,
                 self.settings.provider.canister_id,
-                Some(self.settings.host.clone()),
+                SessionMinterOptions {
+                    host: Some(self.settings.host.clone()),
+                    root_key: self.settings.agent.root_key.clone(),
+                    fetch_root_key: self.settings.agent.fetch_root_key,
+                },
             )
             .ok()?;
             minter.revoke().await.err()
@@ -1152,6 +1168,8 @@ impl AuthClient {
                 .ok_or(AuthClientError::SessionNotHeld)?,
             canister_id: self.settings.provider.canister_id,
             host: self.settings.host.clone(),
+            root_key: self.settings.agent.root_key.clone(),
+            fetch_root_key: self.settings.agent.fetch_root_key,
         })
         .await
     }
@@ -1593,6 +1611,7 @@ impl AuthClient {
             sso_domain_service_factory(
                 self.settings.provider.canister_id,
                 self.settings.host.clone(),
+                self.settings.agent.clone(),
             ),
         ));
         let inner = self.inner.clone();
@@ -1897,6 +1916,20 @@ mod tests {
             AuthClient::new(options),
             Err(AuthClientError::InvalidOptions(_))
         ));
+    }
+
+    #[test]
+    fn the_agent_trust_options_are_kept() {
+        let client = AuthClient::new(AuthClientCreateOptions {
+            host: Some("http://localhost:8000".to_string()),
+            root_key: Some(vec![7, 7, 7]),
+            fetch_root_key: Some(true),
+            ..Default::default()
+        })
+        .expect("a client");
+        assert_eq!(client.settings.host, "http://localhost:8000");
+        assert_eq!(client.settings.agent.root_key, Some(vec![7, 7, 7]));
+        assert!(client.settings.agent.fetch_root_key);
     }
 
     #[cfg(all(

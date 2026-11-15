@@ -54,8 +54,8 @@ pub use identity::{
 };
 pub use minter::{
     AppResult, AppSessionError, CandidDelegation, GetDelegationArgs, PrepareDelegationArgs,
-    PreparedDelegation, SessionMinter, SessionService, SignedAppDelegation, app_delegation_chain,
-    assert_chain_reaches, unwrap_session_result,
+    PreparedDelegation, SessionMinter, SessionMinterOptions, SessionService, SignedAppDelegation,
+    app_delegation_chain, assert_chain_reaches, unwrap_session_result,
 };
 
 /// The canister methods this crate calls on Internet Identity.
