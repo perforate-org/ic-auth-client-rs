@@ -163,7 +163,7 @@ Slots (namespace prefix `"<ns>:"`): `session`, `session-pending`, `app`, `app-pe
 2. **wasm-pack tests** (`cargo test --target wasm32` + `wasm-bindgen-test`): WebCrypto key handling, IDB wrapper, cookie/localStorage stores, postMessage channel (with fake window), foreground refresh.
 3. **Portable fakes** (ported from upstream `tests/client/fake-transport.ts`, `fake-url-transport.ts`): a `FakeTransport` + `FakeUrlTransport` in Rust so the whole `AuthClient` sign-in/out/attributes state machine can be tested hermetically on wasm and native.
 4. **Playwright conformance suite** (`compat-tests/`): page loads our wasm client *and* the real `@icp-sdk/signer` e2e mock wallet / `@icp-sdk/auth` v11; assert protocol conformance and cross-library storage compatibility. Reference fixtures: `/tmp/icp-js-signer/e2e/fixtures/{mock-wallet,mock-auth-provider,relying-party}.ts`.
-5. **Live e2e** (best effort, not in CI): `dfx` + `internet-identity` canister (needs an II build with `app_prepare_delegation`/`app_get_delegation`/`app_sso_domain_*`), driving the wasm client through a real ceremony.
+5. **Live e2e** (best effort, not in CI): `icp-cli` local network + `internet-identity` canister (needs an II build with `app_prepare_delegation`/`app_get_delegation`/`app_sso_domain_*`), driving the wasm client through a real ceremony.
 
 ## 7. Phases (each ends green)
 

@@ -1,7 +1,7 @@
 //! How the agents this client builds trust the host they talk to.
 //!
 //! An agent verifies canister responses against a root key, and `ic-agent`
-//! starts from the mainnet one. A local replica (`dfx start`, a test instance)
+//! starts from the mainnet one. A local replica (`icp network start`, a test instance)
 //! signs with its own, so a host that talks to one either hands the key in
 //! ([`AgentOptions::root_key`]) or asks the agent to read it from the replica's
 //! `/api/v2/status` ([`AgentOptions::fetch_root_key`]).

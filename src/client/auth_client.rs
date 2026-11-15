@@ -1921,13 +1921,13 @@ mod tests {
     #[test]
     fn the_agent_trust_options_are_kept() {
         let client = AuthClient::new(AuthClientCreateOptions {
-            host: Some("http://localhost:4943".to_string()),
+            host: Some("http://localhost:8000".to_string()),
             root_key: Some(vec![7, 7, 7]),
             fetch_root_key: Some(true),
             ..Default::default()
         })
         .expect("a client");
-        assert_eq!(client.settings.host, "http://localhost:4943");
+        assert_eq!(client.settings.host, "http://localhost:8000");
         assert_eq!(client.settings.agent.root_key, Some(vec![7, 7, 7]));
         assert!(client.settings.agent.fetch_root_key);
     }

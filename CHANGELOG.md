@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Root key configuration for canister calls.** `AuthClientCreateOptions` gains
   `root_key` and `fetch_root_key`, so a client can talk to a local replica
-  (`dfx start`, PocketIC), which signs with a root key of its own instead of the
+  (`icp network start`, PocketIC), which signs with a root key of its own instead of the
   mainnet one `ic-agent` starts from:
   - `fetch_root_key: Some(true)` reads the key from the host's `api/v2/status`
     on first use (opt-in: against the mainnet it would trust the endpoint it is

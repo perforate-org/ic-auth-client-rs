@@ -226,7 +226,7 @@ requests with from that session. The client installs this as the rotating
 | `uniffi`, `swift`, `kotlin` | no | Bindings for Swift/Kotlin consumers |
 | `tracing` | no | Logging with `tracing` |
 
-## Local replica (dfx, PocketIC)
+## Local replica (icp-cli, PocketIC)
 
 A replica signs with a root key of its own, and `ic-agent` starts from the
 mainnet one, so canister calls (minting a delegation, notification consent, SSO)
@@ -234,7 +234,7 @@ fail against a local replica unless the client is told how to trust it:
 
 ```rust
 let client = AuthClient::new(AuthClientCreateOptions {
-    host: Some("http://localhost:4943".to_string()),
+    host: Some("http://localhost:8000".to_string()),
     // Read the key from the replica's api/v2/status on first use, or hand a
     // known key in with `root_key: Some(key)` and nothing is fetched.
     fetch_root_key: Some(true),
@@ -243,11 +243,23 @@ let client = AuthClient::new(AuthClientCreateOptions {
 ```
 
 `fetch_root_key` is opt-in on purpose: against the mainnet it would trust the
-endpoint the agent is meant to verify. A local Internet Identity needs its
-canister id in `identity_provider` as well (`http://<canister>.localhost:4943`,
-canister id `<canister>`). The lower-level `SessionMinterOptions` and
-`NotificationConsentOptions` accept the same two settings, and
+endpoint the agent is meant to verify. The same two settings exist on the
+lower-level `SessionMinterOptions` and `NotificationConsentOptions`, and
 `SessionMinter::with_agent` takes an agent you configured yourself.
+
+`icp network start -d` runs the local network (and `icp network stop` stops it).
+The gateway binds to `http://localhost:<gateway.port>` --- 8000 by default, set
+with `gateway.port` in `icp.yaml` --- and canisters are served at
+`http://<canister>.localhost:<gateway.port>`. A local Internet Identity is
+therefore:
+
+```rust
+let ii = Principal::from_text("<ii-canister-id>")?;
+let identity_provider = IdentityProvider::new(
+    format!("http://{ii}.localhost:8000"),
+    ii,
+);
+```
 
 ## Native applications (non-WebView)
 

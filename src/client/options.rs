@@ -165,7 +165,7 @@ pub struct AuthClientCreateOptions {
     /// The IC host's known root key, for a replica that is not the mainnet.
     ///
     /// `ic-agent` starts from the mainnet's key, so canister calls verified
-    /// against a local replica (`dfx start`, PocketIC) fail without this or
+    /// against a local replica (`icp network start`, PocketIC) fail without this or
     /// [`AuthClientCreateOptions::fetch_root_key`].
     pub root_key: Option<Vec<u8>>,
 
