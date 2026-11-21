@@ -50,6 +50,7 @@ and the dependency ever drift apart.
 
 | `ic-agent` version | `ic-auth-client` version | upstream `@icp-sdk/auth` |
 | ------------------ | ------------------------ | ------------------------ |
+| 0.50.\*            | 0.50.\*                   | 11.x                     |
 | 0.49.\*            | 0.49.\*                   | 11.x                     |
 | 0.45.\*            | 0.5.\*                   | 5.x                      |
 | 0.44.\*            | 0.4.\*                   | 4.x                      |
